@@ -1,0 +1,32 @@
+{
+  "date": "2026-04-09",
+  "total_customers": 468,
+  "past_flow": 413,
+  "in_flow": 54,
+  "variant_error": 1,
+  "p1": 56,
+  "p2": 300,
+  "p3": 57,
+  "total_debt": 545814,
+  "new_7d": 2,
+  "product_debt": {
+    "Wisewell Model 1 Subscription": 351161.9,
+    "Wisewell Nano + Subscription": 66217.2,
+    "Filter Subscription": 62370.0,
+    "Filter Subscription (Nano+)": 56511.0,
+    "Wisewell Bubble Subscription": 5752.0,
+    "Filter Subscription (Model 1)": 1980.0,
+    "Wisewell Nano Subscription": 1683.0,
+    "Wisewell Flat Subscription": 139.0
+  },
+  "product_count": {
+    "Wisewell Model 1 Subscription": 175,
+    "Filter Subscription": 71,
+    "Filter Subscription (Nano+)": 15,
+    "Wisewell Nano + Subscription": 122,
+    "Filter Subscription (Model 1)": 5,
+    "Wisewell Bubble Subscription": 10,
+    "Wisewell Nano Subscription": 14,
+    "Wisewell Flat Subscription": 1
+  }
+}
