@@ -1,18 +1,18 @@
-name: Failed Payments Snapshot Report
+name: Failed Payments — Daily Sheet Refresh
 
 on:
-  # Mon, Wed, Fri at 09:00 UAE time (UTC+4 = 05:00 UTC)
+  # Daily at 07:00 UAE time (UTC+4 = 03:00 UTC)
   schedule:
-    - cron: "0 5 * * 1,3,5"
+    - cron: "0 3 * * *"
 
   # Allow manual trigger from GitHub Actions UI
   workflow_dispatch:
 
 jobs:
-  snapshot:
+  refresh:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # needed to commit last_snapshot.json back to repo
+      contents: write   # needed to commit success_counts.json + last_snapshot.json
 
     steps:
       - name: Checkout repo
@@ -26,18 +26,18 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install requests google-auth google-auth-httplib2
 
-      - name: Run snapshot script
+      - name: Run sheet refresh
         env:
-          RECHARGE_API_KEY: ${{ secrets.RECHARGE_API_KEY }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: python scripts/failed_payments_snapshot.py
+          RECHARGE_API_KEY:  ${{ secrets.RECHARGE_API_KEY }}
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+        run: python scripts/sheet_refresh.py
 
-      - name: Commit updated snapshot
+      - name: Commit updated cache files
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add scripts/last_snapshot.json
-          git diff --cached --quiet || git commit -m "chore: update failed payments snapshot [skip ci]"
+          git add scripts/last_snapshot.json scripts/success_counts.json
+          git diff --cached --quiet || git commit -m "chore: daily sheet refresh $(date -u +%Y-%m-%d) [skip ci]"
           git push
