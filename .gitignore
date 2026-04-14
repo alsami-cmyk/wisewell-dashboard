@@ -1,3 +1,6 @@
+# Claude Code local config (may contain tokens/webhooks)
+.claude/
+
 # Secrets — never commit these
 .streamlit/secrets.toml
 credentials.json

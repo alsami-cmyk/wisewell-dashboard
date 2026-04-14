@@ -101,11 +101,19 @@ def build_snapshot(charges):
     for email, clist in by_email.items():
         earliest    = min(c["created_at"][:10] for c in clist)
         days_since  = (today - date.fromisoformat(earliest)).days
-        charge_price = max(float(c.get("total_price", 0)) for c in clist)
+
+        # Sum max charge price per address_id to capture multiple subscriptions
+        per_sub_max = {}
+        for c in clist:
+            aid = c.get("address_id")
+            p = float(c.get("total_price", 0))
+            per_sub_max[aid] = max(per_sub_max.get(aid, 0), p)
+        charge_price = sum(per_sub_max.values())
 
         # Billing frequency — assume monthly unless it's a Filter Subscription
         # (6-month billing at AED 330–990/cycle detected by price range)
-        freq_days = 180 if charge_price in (330.0, 660.0, 990.0) else 30
+        max_single = max(per_sub_max.values())
+        freq_days = 180 if max_single in (330.0, 660.0, 990.0) else 30
         billing_cycles = max(1, round(days_since / freq_days))
         est_debt = charge_price * billing_cycles
 
