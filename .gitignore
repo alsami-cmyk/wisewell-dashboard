@@ -25,6 +25,14 @@ build/
 venv/
 .venv/
 
+# Node
+node_modules/
+npm-debug.log*
+
+# Unrelated local project folders
+Freshworks/
+adnoc-model/
+
 # macOS
 .DS_Store
 .AppleDouble
