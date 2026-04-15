@@ -43,6 +43,7 @@ ALL_SOURCE_TABS = [
     "Recharge - UAE", "Recharge - KSA", "Recharge - USA",
     "Shopify - UAE",  "Shopify - KSA",  "Shopify - USA",
     "Marketing Spend",
+    "Monthly User Base",
 ]
 
 MAX_RETRIES   = 3
@@ -549,6 +550,69 @@ def load_marketing_spend() -> pd.DataFrame:
         .sort_values("month_dt")
         .reset_index(drop=True)
     )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_user_base_series() -> pd.DataFrame:
+    """
+    Monthly User Base tab → time series of total user base per country.
+
+    Row layout (0-indexed):
+      3  → Global Ending User Base
+      19 → UAE Total User Base (subscribers + owners)
+      35 → KSA Total User Base (subscribers + owners)
+
+    Returns DataFrame: month_dt, global, uae, ksa
+    Sorted by month ascending. Only months with non-zero global values.
+    """
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    vals = raw_data.get("Monthly User Base", [])
+
+    empty = pd.DataFrame(columns=["month_dt", "global", "uae", "ksa"])
+    if len(vals) < 4:
+        return empty
+
+    header = vals[0]
+    # Find month columns (skip col 0 which is the row label)
+    month_indices: list[tuple[int, pd.Timestamp]] = []
+    for i, h in enumerate(header[1:], start=1):
+        h_str = str(h).strip()
+        if not h_str or h_str.startswith("--"):
+            continue
+        try:
+            dt = pd.to_datetime(h_str, format="%b-%y")
+        except Exception:
+            continue
+        month_indices.append((i, dt))
+
+    if not month_indices:
+        return empty
+
+    def _row_values(row_idx: int) -> list[int]:
+        row = vals[row_idx] if row_idx < len(vals) else []
+        out = []
+        for col_i, _dt in month_indices:
+            try:
+                v = int(str(row[col_i]).replace(",", "")) if col_i < len(row) and row[col_i] else 0
+            except Exception:
+                v = 0
+            out.append(v)
+        return out
+
+    global_vals = _row_values(3)
+    uae_vals    = _row_values(19)
+    ksa_vals    = _row_values(35)
+
+    df = pd.DataFrame({
+        "month_dt": [dt for _i, dt in month_indices],
+        "global":   global_vals,
+        "uae":      uae_vals,
+        "ksa":      ksa_vals,
+    })
+
+    # Only keep months where global > 0 (future months are 0)
+    df = df[df["global"] > 0].sort_values("month_dt").reset_index(drop=True)
+    return df
 
 
 def get_load_diagnostics() -> tuple[dict[str, str], float]:

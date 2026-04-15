@@ -16,6 +16,7 @@ from utils import (
     PRODUCT_COLOR, PRODUCT_ORDER,
     fmt_usd, get_fx, get_load_diagnostics,
     load_recharge_full, load_shopify_all, load_marketing_spend,
+    load_user_base_series,
 )
 
 # ── Read sidebar filter state ─────────────────────────────────────────────────
@@ -35,6 +36,7 @@ try:
     rc_full = load_recharge_full()
     sh_all  = load_shopify_all()
     mkt     = load_marketing_spend()
+    ub      = load_user_base_series()
     fx      = get_fx()
 
     errors, fetch_time = get_load_diagnostics()
@@ -92,24 +94,26 @@ mom_sales   = int(
 mom_delta  = mtd_sales - mom_sales
 daily_avg  = mtd_sales / days_elapsed if days_elapsed > 0 else 0.0
 
-# ── Active Users ──────────────────────────────────────────────────────────────
-# Definition: machines with an ACTIVE machine subscription + ALL ownership buyers.
-# Ownership is never filtered by product (owners are counted regardless).
-# Country filter still applies to both subs and owners.
+# ── Active Users (from Monthly User Base tab) ────────────────────────────────
+# User Base = cumulative running total of active subs + owners, maintained in the
+# Monthly User Base calculated tab.  This is the authoritative source.
 active_rc = rc[rc["status"] == "ACTIVE"]
 
-active_mach_subs = (
-    active_rc[active_rc["category"] == "Machine"]["subscription_id"].nunique()
-)
-
-# Ownership: all-time from Shopify, filtered by country only (not product)
-sh_own = sh_all[sh_all["is_ownership"]]
-if country_sel != "All":
-    sh_own = sh_own[sh_own["country"] == country_sel]
-ownership_count = len(sh_own)
-
-total_users = active_mach_subs + ownership_count
-users_note  = ""
+if not ub.empty:
+    if country_sel == "UAE":
+        total_users = int(ub["uae"].iloc[-1])
+    elif country_sel == "KSA":
+        total_users = int(ub["ksa"].iloc[-1])
+    elif country_sel == "USA":
+        # USA not tracked in Monthly User Base; fall back to Recharge active count
+        total_users = active_rc[active_rc["category"] == "Machine"]["subscription_id"].nunique()
+    else:
+        total_users = int(ub["global"].iloc[-1])
+    users_note = ""
+else:
+    # Fallback: Recharge active machine subs only
+    total_users = active_rc[active_rc["category"] == "Machine"]["subscription_id"].nunique()
+    users_note = " (subs only)"
 
 # ── ARR ───────────────────────────────────────────────────────────────────────
 total_arr = float(active_rc["arr_usd"].sum())
@@ -411,13 +415,54 @@ with c_donut:
     else:
         st.info("No Shopify sales data for this filter in the current month.")
 
+# ── Row 3: User Base Over Time (full width) ──────────────────────────────────
+if not ub.empty:
+    st.markdown("---")
+
+    # Pick the right column for the selected country
+    if country_sel == "UAE":
+        ub_col, ub_label = "uae", "UAE User Base"
+    elif country_sel == "KSA":
+        ub_col, ub_label = "ksa", "KSA User Base"
+    else:
+        ub_col, ub_label = "global", "Total User Base"
+
+    ub_chart = ub[ub["month_dt"] >= chart_start].copy()
+    if not ub_chart.empty:
+        ub_chart["label"] = ub_chart["month_dt"].dt.strftime("%b-%y")
+
+        fig_ub = go.Figure()
+        fig_ub.add_trace(go.Scatter(
+            x=ub_chart["label"],
+            y=ub_chart[ub_col],
+            mode="lines+markers+text",
+            line=dict(color="#8b5cf6", width=2.5),
+            marker=dict(size=6, color="#8b5cf6"),
+            text=[f"{v:,}" for v in ub_chart[ub_col]],
+            textposition="top center",
+            textfont=dict(size=9, color="#94a3b8"),
+            hovertemplate="<b>%{x}</b><br>%{y:,} users<extra></extra>",
+        ))
+        fig_ub.update_layout(
+            title=dict(text=ub_label + " Over Time", x=0,
+                       font=dict(size=13, color="#e2e5f0")),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            height=320,
+            xaxis=dict(tickangle=-45, tickfont=dict(size=9, color="#94a3b8"),
+                       showgrid=False, zeroline=False),
+            yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.06)",
+                       zeroline=False, tickfont=dict(size=9, color="#94a3b8")),
+            margin=dict(t=44, b=8, l=4, r=8),
+        )
+        st.plotly_chart(fig_ub, use_container_width=True)
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("---")
 notes = []
 if users_note:
     notes.append(
-        "**Active Users:** ownership customers are not split by product; "
-        "showing active machine subscriptions only when a product filter is active."
+        "**Active Users:** USA not tracked in Monthly User Base tab; "
+        "showing Recharge active machine subscriptions only."
     )
 if cac_note:
     notes.append(f"**CAC:** {cac_note.strip(' ()')}")
