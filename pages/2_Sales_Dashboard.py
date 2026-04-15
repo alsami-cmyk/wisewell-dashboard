@@ -401,11 +401,6 @@ with c_donut:
 # ── Footer note ────────────────────────────────────────────────────────────────
 st.markdown("---")
 footnotes = []
-if country_sel == "KSA":
-    footnotes.append(
-        "**KSA note:** Monthly Sales tab formula stopped updating from Jan-26. "
-        "Monthly chart uses live Shopify data for Sep-25 onward."
-    )
 if cac_display.endswith("*"):
     footnotes.append(
         "**CAC:** Per-country marketing spend not yet populated in the sheet. "
