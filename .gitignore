@@ -28,3 +28,4 @@ venv/
 # macOS
 .DS_Store
 .AppleDouble
+.streamlit/secrets.toml
