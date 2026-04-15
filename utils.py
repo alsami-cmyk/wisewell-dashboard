@@ -368,6 +368,10 @@ def monthly_sales_series(vals, country="All", product="All"):
 
     pi = PRODUCT_ORDER.index(product) if product in PRODUCT_ORDER else -1
 
+    # USA has no history in Monthly Sales tab — live Shopify only
+    if country not in ("All", "UAE", "KSA"):
+        return [], []
+
     if country == "All" and product == "All": return months, row_vals(3)
     if country == "UAE" and product == "All": return months, row_vals(20)
     if country == "KSA" and product == "All": return months, row_vals(38)
