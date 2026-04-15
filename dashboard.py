@@ -18,7 +18,7 @@ from streamlit_autorefresh import st_autorefresh
 
 from utils import (
     PRODUCT_COLOR, PRODUCT_ORDER, SHARED_CSS,
-    fmt_usd, get_fx,
+    fmt_usd, get_fx, get_load_diagnostics,
     load_recharge_full, load_shopify_all, load_marketing_spend,
 )
 
@@ -29,6 +29,13 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ── Health-check endpoint (for UptimeRobot / cron keep-alive) ─────────────────
+# Usage: add ?health=1 to the URL — returns 200 instantly without loading data.
+if st.query_params.get("health"):
+    st.write("OK")
+    st.stop()
+
 st_autorefresh(interval=5 * 60 * 1000, key="sales_refresh")
 st.markdown(SHARED_CSS, unsafe_allow_html=True)
 st.markdown("""
@@ -96,11 +103,29 @@ with st.sidebar:
     st.caption("Auto-refreshes every 5 min")
 
 # ── Load source data (all unfiltered, cached 5 min) ───────────────────────────
-with st.spinner("Loading…"):
+# All 7 Google Sheets tabs are fetched in parallel under the hood.
+load_ok = True
+try:
     rc_full = load_recharge_full()
     sh_all  = load_shopify_all()
     mkt     = load_marketing_spend()
     fx      = get_fx()
+
+    # Show any per-tab errors as warnings
+    errors, fetch_time = get_load_diagnostics()
+    if errors:
+        for tab, msg in errors.items():
+            st.warning(f"⚠️  Could not load **{tab}**: {msg}", icon="⚠️")
+
+except Exception as exc:
+    st.error(
+        f"**Data load failed** — the Google Sheets API returned an error. "
+        f"Try refreshing in a moment.\n\n`{exc}`"
+    )
+    load_ok = False
+
+if not load_ok:
+    st.stop()
 
 # Apply FX to Recharge
 if not rc_full.empty:
@@ -510,6 +535,14 @@ notes.append(
     "(Shopify Zapier integration started Sep-25). "
     "Sep-25 onward shows Shopify orders (subscriptions + ownership)."
 )
+
+# Load timing diagnostic
+try:
+    _errs, _t = get_load_diagnostics()
+    notes.append(f"**Performance:** data synced in {_t:.1f}s (7 tabs, parallel).")
+except Exception:
+    pass
+
 with st.expander("ℹ️  Data notes", expanded=False):
     for n in notes:
         st.markdown(f"- {n}")

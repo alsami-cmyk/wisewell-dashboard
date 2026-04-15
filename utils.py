@@ -6,10 +6,16 @@ Architecture: every metric is computed directly from the six live source tabs �
   Shopify-UAE,  Shopify-KSA,  Shopify-USA
 plus the Marketing Spend tab for CAC.
 No calculated / pre-aggregated tabs are read.
+
+Performance: all 7 tabs are fetched in parallel on first load (~2-4s instead of
+~12-20s sequential). Automatic retry on transient Google API errors.
 """
 
 import json
+import logging
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import requests
@@ -18,9 +24,29 @@ from googleapiclient.discovery import build
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 
+# ── Logging ───────────────────────────────────────────────────────────────────
+logger = logging.getLogger("wisewell")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
 # ── Sheet identity ─────────────────────────────────────────────────────────────
 SHEET_ID = "1NjPJKswE2rXFnXsCah5Kv4tiSEi88jlGLnZwfHsp5o4"
 SCOPES   = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+
+ALL_SOURCE_TABS = [
+    "Recharge - UAE", "Recharge - KSA", "Recharge - USA",
+    "Shopify - UAE",  "Shopify - KSA",  "Shopify - USA",
+    "Marketing Spend",
+]
+
+MAX_RETRIES   = 3
+RETRY_BACKOFF = [1, 2, 4]   # seconds between retries
 
 # ── Product catalogue ──────────────────────────────────────────────────────────
 PRODUCT_MAP: dict[str, tuple[str, str]] = {
@@ -173,16 +199,6 @@ def _shopify_product_from_name(name: str) -> tuple[str | None, str]:
     return None, "Unknown"
 
 
-def _read_tab(svc, tab: str) -> list[list[str]]:
-    """Fetch all values from a named tab; returns list-of-rows."""
-    return (
-        svc.spreadsheets().values()
-        .get(spreadsheetId=SHEET_ID, range=f"'{tab}'")
-        .execute()
-        .get("values", [])
-    )
-
-
 def _rows_to_df(rows: list[list[str]]) -> pd.DataFrame:
     """Pad and convert raw Sheets rows to a DataFrame."""
     if len(rows) < 2:
@@ -192,9 +208,80 @@ def _rows_to_df(rows: list[list[str]]) -> pd.DataFrame:
     return pd.DataFrame(padded[1:], columns=padded[0])
 
 
+# ── Parallel tab fetcher ──────────────────────────────────────────────────────
+
+def _fetch_single_tab(
+    creds, tab_name: str
+) -> tuple[str, list[list[str]], float, str | None]:
+    """
+    Fetch one tab with retry.  Returns (tab_name, rows, elapsed_sec, error_msg).
+    Each thread builds its own Sheets service for thread-safety.
+    """
+    t0 = time.perf_counter()
+    for attempt in range(MAX_RETRIES):
+        try:
+            svc  = build("sheets", "v4", credentials=creds, cache_discovery=False)
+            rows = (
+                svc.spreadsheets().values()
+                .get(spreadsheetId=SHEET_ID, range=f"'{tab_name}'")
+                .execute()
+                .get("values", [])
+            )
+            elapsed = time.perf_counter() - t0
+            logger.info(
+                "Fetched '%s': %d rows in %.2fs", tab_name, len(rows), elapsed
+            )
+            return tab_name, rows, elapsed, None
+        except Exception as exc:
+            wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+            logger.warning(
+                "Retry %d/%d for '%s': %s — waiting %ds",
+                attempt + 1, MAX_RETRIES, tab_name, exc, wait,
+            )
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(wait)
+
+    elapsed = time.perf_counter() - t0
+    error   = f"Failed after {MAX_RETRIES} retries"
+    logger.error("FAILED '%s' — %s (%.2fs)", tab_name, error, elapsed)
+    return tab_name, [], elapsed, error
+
+
+@st.cache_data(ttl=300, show_spinner="Syncing with Google Sheets…")
+def _fetch_all_tabs() -> tuple[dict[str, list[list[str]]], dict[str, str], float]:
+    """
+    Fetch all 7 source tabs in parallel.
+    Returns (data_dict, errors_dict, total_seconds).
+    """
+    creds   = get_credentials()
+    t_start = time.perf_counter()
+
+    results: dict[str, list[list[str]]] = {}
+    errors:  dict[str, str]             = {}
+
+    with ThreadPoolExecutor(max_workers=7) as pool:
+        futures = {
+            pool.submit(_fetch_single_tab, creds, tab): tab
+            for tab in ALL_SOURCE_TABS
+        }
+        for future in as_completed(futures):
+            tab_name, rows, _elapsed, err = future.result()
+            results[tab_name] = rows
+            if err:
+                errors[tab_name] = err
+
+    total = time.perf_counter() - t_start
+    ok    = len(ALL_SOURCE_TABS) - len(errors)
+    logger.info(
+        "All tabs done: %d/%d OK in %.2fs (parallel)",
+        ok, len(ALL_SOURCE_TABS), total,
+    )
+    return results, errors, total
+
+
 # ── Live source-tab loaders ───────────────────────────────────────────────────
 
-@st.cache_data(ttl=300, show_spinner="Syncing Recharge…")
+@st.cache_data(ttl=300, show_spinner=False)
 def load_recharge_full() -> pd.DataFrame:
     """
     ALL Recharge rows (every status) from UAE + KSA + USA.
@@ -208,8 +295,7 @@ def load_recharge_full() -> pd.DataFrame:
 
     arr_local is non-zero only for ACTIVE rows.
     """
-    creds   = get_credentials()
-    service = build("sheets", "v4", credentials=creds)
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
 
     frames = []
     for tab, currency, market in [
@@ -217,7 +303,7 @@ def load_recharge_full() -> pd.DataFrame:
         ("Recharge - KSA", "SAR", "KSA"),
         ("Recharge - USA", "USD", "USA"),
     ]:
-        rows = _read_tab(service, tab)
+        rows = raw_data.get(tab, [])
         df   = _rows_to_df(rows)
         if df.empty:
             continue
@@ -300,7 +386,7 @@ def load_recharge_full() -> pd.DataFrame:
     return df[[c for c in keep if c in df.columns]]
 
 
-@st.cache_data(ttl=300, show_spinner="Syncing Shopify…")
+@st.cache_data(ttl=300, show_spinner=False)
 def load_shopify_all() -> pd.DataFrame:
     """
     All Shopify orders from UAE + KSA + USA.
@@ -308,8 +394,7 @@ def load_shopify_all() -> pd.DataFrame:
     Columns: country, date, product, category, qty, is_ownership
       is_ownership = True when the order came from an ownership (Units-Own) column.
     """
-    creds  = get_credentials()
-    svc    = build("sheets", "v4", credentials=creds)
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
     frames = []
 
     for tab_name, country in [
@@ -317,7 +402,7 @@ def load_shopify_all() -> pd.DataFrame:
         ("Shopify - KSA", "KSA"),
         ("Shopify - USA", "USA"),
     ]:
-        rows = _read_tab(svc, tab_name)
+        rows = raw_data.get(tab_name, [])
         if len(rows) < 2:
             continue
         headers = [h.strip() for h in rows[0]]
@@ -385,10 +470,9 @@ def load_marketing_spend() -> pd.DataFrame:
     Columns: month_dt, total_usd, uae_usd, ksa_usd
     Values assumed to be USD (Meta/Google ad platforms billed in USD).
     """
-    creds = get_credentials()
-    svc   = build("sheets", "v4", credentials=creds)
-    rows  = _read_tab(svc, "Marketing Spend")
-    df    = _rows_to_df(rows)
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    rows = raw_data.get("Marketing Spend", [])
+    df   = _rows_to_df(rows)
 
     empty = pd.DataFrame(columns=["month_dt", "total_usd", "uae_usd", "ksa_usd"])
     if df.empty:
@@ -431,3 +515,12 @@ def load_marketing_spend() -> pd.DataFrame:
         .sort_values("month_dt")
         .reset_index(drop=True)
     )
+
+
+def get_load_diagnostics() -> tuple[dict[str, str], float]:
+    """
+    Returns (errors_dict, total_fetch_seconds) from the last _fetch_all_tabs() call.
+    Call AFTER the loaders have run (they trigger _fetch_all_tabs if cache is cold).
+    """
+    _data, errors, elapsed = _fetch_all_tabs()
+    return errors, elapsed
