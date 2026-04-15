@@ -93,23 +93,23 @@ mom_delta  = mtd_sales - mom_sales
 daily_avg  = mtd_sales / days_elapsed if days_elapsed > 0 else 0.0
 
 # ── Active Users ──────────────────────────────────────────────────────────────
+# Definition: machines with an ACTIVE machine subscription + ALL ownership buyers.
+# Ownership is never filtered by product (owners are counted regardless).
+# Country filter still applies to both subs and owners.
 active_rc = rc[rc["status"] == "ACTIVE"]
 
-if product_sel == "All":
-    active_mach_subs = (
-        active_rc[active_rc["category"] == "Machine"]["subscription_id"].nunique()
-    )
-    sh_own = sh_all[sh_all["is_ownership"]]
-    if country_sel != "All":
-        sh_own = sh_own[sh_own["country"] == country_sel]
-    ownership_count = len(sh_own)
-    total_users = active_mach_subs + ownership_count
-    users_note  = ""
-else:
-    total_users = (
-        active_rc[active_rc["category"] == "Machine"]["subscription_id"].nunique()
-    )
-    users_note = " (subs only)"
+active_mach_subs = (
+    active_rc[active_rc["category"] == "Machine"]["subscription_id"].nunique()
+)
+
+# Ownership: all-time from Shopify, filtered by country only (not product)
+sh_own = sh_all[sh_all["is_ownership"]]
+if country_sel != "All":
+    sh_own = sh_own[sh_own["country"] == country_sel]
+ownership_count = len(sh_own)
+
+total_users = active_mach_subs + ownership_count
+users_note  = ""
 
 # ── ARR ───────────────────────────────────────────────────────────────────────
 total_arr = float(active_rc["arr_usd"].sum())
