@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── DOT GRID BODY ── */
+body {
+  background-color: #F4F6FA;
+  background-image: radial-gradient(circle, rgba(0, 71, 186, 0.04) 1px, transparent 0);
+  background-size: 30px 30px;
+  min-height: 100vh;
+}
+
+/* ── RANGE SLIDER RESETS ── */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  width: 100%;
+}
+
+/* Navy slider */
+input[type='range'].slider-navy {
+  background: #E0E5F0;
+}
+input[type='range'].slider-navy::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #0047ba;
+  border: 2.5px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 71, 186, 0.2);
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+input[type='range'].slider-navy::-webkit-slider-thumb:hover {
+  background: #003a9a;
+  transform: scale(1.1);
+}
+input[type='range'].slider-navy::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #0047ba;
+  border: 2.5px solid #fff;
+  cursor: pointer;
+}
+
+
+/* ── NUMBER INPUT — hide spinners ── */
+input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
