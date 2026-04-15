@@ -33,7 +33,7 @@ PRODUCT_MAP = {
 PRODUCT_ORDER  = ["Model 1", "Nano+", "Bubble", "Flat", "Nano Tank"]
 CATEGORY_COLOR = {"Machine": "#0ea5e9", "Filter": "#10b981"}
 MARKET_COLOR   = {"UAE": "#6366f1", "KSA": "#f59e0b"}
-FX_FALLBACK    = {"AED": 1 / 3.6725, "SAR": 1 / 3.75}
+FX_FALLBACK    = {"AED": 1 / 3.6725, "SAR": 1 / 3.75, "USD": 1.0}
 
 SHARED_CSS = """
 <style>
@@ -75,17 +75,23 @@ def load_raw_data():
     service = build("sheets", "v4", credentials=creds)
 
     frames = []
-    for tab, currency in [("Recharge - UAE", "AED"), ("Recharge - KSA", "SAR")]:
+    for tab, currency, market in [
+        ("Recharge - UAE", "AED", "UAE"),
+        ("Recharge - KSA", "SAR", "KSA"),
+        ("Recharge - USA", "USD", "USA"),
+    ]:
         rows = (
             service.spreadsheets().values()
             .get(spreadsheetId=SHEET_ID, range=tab)
             .execute()
             .get("values", [])
         )
+        if len(rows) < 2:
+            continue
         max_cols = max(len(r) for r in rows)
         padded   = [r + [""] * (max_cols - len(r)) for r in rows]
         df       = pd.DataFrame(padded[1:], columns=padded[0])
-        df["market"]   = "UAE" if currency == "AED" else "KSA"
+        df["market"]   = market
         df["currency"] = currency
         frames.append(df)
 
@@ -115,7 +121,7 @@ def get_fx():
     try:
         r     = requests.get("https://open.er-api.com/v6/latest/USD", timeout=5)
         rates = r.json().get("rates", {})
-        return {"AED": 1 / rates["AED"], "SAR": 1 / rates["SAR"], "source": "live"}
+        return {"AED": 1 / rates["AED"], "SAR": 1 / rates["SAR"], "USD": 1.0, "source": "live"}
     except Exception:
         return {**FX_FALLBACK, "source": "fallback (fixed peg)"}
 
@@ -237,12 +243,14 @@ def load_recharge_cancellations():
     creds = get_credentials()
     svc   = build("sheets", "v4", credentials=creds)
     frames = []
-    for tab, market in [("Recharge - UAE", "UAE"), ("Recharge - KSA", "KSA")]:
+    for tab, market in [("Recharge - UAE", "UAE"), ("Recharge - KSA", "KSA"), ("Recharge - USA", "USA")]:
         rows = (
             svc.spreadsheets().values()
             .get(spreadsheetId=SHEET_ID, range=tab)
             .execute().get("values", [])
         )
+        if len(rows) < 2:
+            continue
         max_cols = max(len(r) for r in rows)
         padded   = [r + [""] * (max_cols - len(r)) for r in rows]
         df       = pd.DataFrame(padded[1:], columns=padded[0])
@@ -263,6 +271,47 @@ def load_recharge_cancellations():
     )
     return df[["subscription_id", "market", "status", "product_title",
                "category", "product", "cancelled_at_dt", "is_true_cancel"]]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_user_base_current():
+    """
+    Returns the most recent user base snapshot per country from Monthly User Base tab.
+    User base = active subscriptions + cumulative owners (owners never churn).
+
+    Row layout (0-indexed):
+      3  → Global Ending User Base
+      19 → UAE Total User Base (subscribers + owners)
+      35 → KSA Total User Base (subscribers + owners)
+    """
+    creds = get_credentials()
+    svc   = build("sheets", "v4", credentials=creds)
+    vals  = (
+        svc.spreadsheets().values()
+        .get(spreadsheetId=SHEET_ID, range="'Monthly User Base'")
+        .execute().get("values", [])
+    )
+    header = vals[0]
+    col_idxs = [i for i, h in enumerate(header[1:], start=1)
+                if h and not h.startswith("--")]
+
+    def latest_nonzero(row_idx):
+        row = vals[row_idx] if row_idx < len(vals) else []
+        val = 0
+        for ci in col_idxs:
+            try:
+                v = int(str(row[ci]).replace(",", "")) if ci < len(row) and row[ci] else 0
+                if v > 0:
+                    val = v
+            except Exception:
+                pass
+        return val
+
+    return {
+        "global": latest_nonzero(3),
+        "UAE":    latest_nonzero(19),
+        "KSA":    latest_nonzero(35),
+    }
 
 
 @st.cache_data(ttl=300, show_spinner=False)
