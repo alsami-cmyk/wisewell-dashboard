@@ -81,6 +81,23 @@ CATEGORY_COLOR = {"Machine": "#0ea5e9", "Filter": "#10b981"}
 MARKET_COLOR   = {"UAE": "#6366f1",     "KSA": "#f59e0b", "USA": "#10b981"}
 FX_FALLBACK    = {"AED": 1 / 3.6725,   "SAR": 1 / 3.75,  "USD": 1.0}
 
+# Cancellation reason normalisation (raw Recharge values → display labels)
+CANCELLATION_REASON_MAP: dict[str, str] = {
+    "relocation":             "Relocation",
+    "water quality":          "Water Quality",
+    "personal/lifestyle":     "Personal / Lifestyle",
+    "personal / lifestyle":   "Personal / Lifestyle",
+    "delivery delay":         "Delivery Delay",
+    "machine issues":         "Machine Issues",
+    "water capacity":         "Water Capacity",
+    "operational/error":      "Operational / Error",
+    "operational / error":    "Operational / Error",
+    "switched to competitor": "Switched to Competitor",
+    "financial":              "Financial",
+    "installation issues":    "Installation Issues",
+    "machine fit":            "Machine Fit",
+}
+
 # Shopify unit column mappings: (product_name, ownership_col, subscription_col)
 SHOPIFY_UNIT_COLS = [
     ("Model 1",   "Units - Model 1 (Own)", "Units - Model 1 (Sub)"),
@@ -290,7 +307,7 @@ def load_recharge_full() -> pd.DataFrame:
       subscription_id, status, product_title,
       recurring_price, quantity, charge_interval_frequency,
       created_at_dt (datetime), cancelled_at_dt (datetime),
-      is_true_cancel (bool),
+      is_true_cancel (bool), cancellation_reason (str),
       market, currency, category, product, arr_local (float)
 
     arr_local is non-zero only for ACTIVE rows.
@@ -377,10 +394,27 @@ def load_recharge_full() -> pd.DataFrame:
         df[tc_col].apply(lambda x: str(x).strip() == "1") if tc_col else False
     )
 
+    # ── Cancellation reason ──────────────────────────────────────────────
+    reason_col = next(
+        (c for c in df.columns
+         if "cancellation" in c.lower() and "reason" in c.lower()),
+        None,
+    )
+    if reason_col:
+        raw = df[reason_col].astype(str).str.strip()
+        df["cancellation_reason"] = (
+            raw.str.lower()
+            .map(CANCELLATION_REASON_MAP)
+            .fillna(raw.where(raw.ne("") & raw.ne("nan"), "Not Specified"))
+        )
+    else:
+        df["cancellation_reason"] = "Not Specified"
+
     keep = [
         "subscription_id", "status", "product_title",
         "recurring_price", "quantity", "charge_interval_frequency",
         "created_at_dt", "cancelled_at_dt", "is_true_cancel",
+        "cancellation_reason",
         "market", "currency", "category", "product", "arr_local",
     ]
     return df[[c for c in keep if c in df.columns]]
