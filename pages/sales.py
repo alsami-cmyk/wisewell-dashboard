@@ -99,18 +99,19 @@ daily_avg  = mtd_sales / days_elapsed if days_elapsed > 0 else 0.0
 active_rc = rc[rc["status"] == "ACTIVE"]
 
 if not ub.empty:
+    # Derive USA = Global − UAE − KSA (not tracked separately in the tab)
+    ub["usa"] = (ub["global"] - ub["uae"] - ub["ksa"]).clip(lower=0)
+
     if country_sel == "UAE":
         total_users = int(ub["uae"].iloc[-1])
     elif country_sel == "KSA":
         total_users = int(ub["ksa"].iloc[-1])
     elif country_sel == "USA":
-        # USA not tracked in Monthly User Base; fall back to Recharge active count
-        total_users = active_rc[active_rc["category"] == "Machine"]["subscription_id"].nunique()
+        total_users = int(ub["usa"].iloc[-1])
     else:
         total_users = int(ub["global"].iloc[-1])
     users_note = ""
 else:
-    # Fallback: Recharge active machine subs only
     total_users = active_rc[active_rc["category"] == "Machine"]["subscription_id"].nunique()
     users_note = " (subs only)"
 
@@ -423,6 +424,8 @@ if not ub.empty:
         ub_col, ub_label = "uae", "UAE User Base"
     elif country_sel == "KSA":
         ub_col, ub_label = "ksa", "KSA User Base"
+    elif country_sel == "USA":
+        ub_col, ub_label = "usa", "USA User Base"
     else:
         ub_col, ub_label = "global", "Total User Base"
 
