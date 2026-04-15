@@ -134,6 +134,224 @@ def fmt_usd(v):
     return f"${v:,.0f}"
 
 
+# ── Sales-specific constants ───────────────────────────────────────────────────
+
+PRODUCT_COLOR = {
+    "Model 1":   "#8b5cf6",
+    "Nano+":     "#0ea5e9",
+    "Bubble":    "#f43f5e",
+    "Flat":      "#10b981",
+    "Nano Tank": "#f59e0b",
+    "Filter":    "#94a3b8",
+    "Others":    "#94a3b8",
+}
+
+# Shopify unit columns: (product_name, ownership_col, subscription_col)
+SHOPIFY_UNIT_COLS = [
+    ("Model 1",   "Units - Model 1 (Own)", "Units - Model 1 (Sub)"),
+    ("Nano+",     "Units - Nano+ (Own)",   "Units - Nano+ (Sub)"),
+    ("Bubble",    "Units - Bubble (Own)",  "Units - Bubble (Sub)"),
+    ("Flat",      "Units - Flat (Own)",    "Units - Flat (Sub)"),
+    ("Nano Tank", "Units - Nano (Own)",    "Units - Nano (Sub)"),
+]
+
+
+def _shopify_product_from_name(name: str):
+    """Fallback: infer (category, product) from Shopify Lineitem name."""
+    n = name.lower()
+    if "filter subscription (nano+)" in n:   return "Filter", "Nano+"
+    if "filter subscription (model 1)" in n: return "Filter", "Model 1"
+    if "bubble care+" in n or "care+ plan" in n: return "Filter", "Bubble"
+    if "filter subscription" in n:           return "Filter", "Model 1"
+    if "model 1" in n:   return "Machine", "Model 1"
+    if "nano +" in n or "nano+" in n: return "Machine", "Nano+"
+    if "bubble" in n:    return "Machine", "Bubble"
+    if "flat" in n:      return "Machine", "Flat"
+    if "nano" in n:      return "Machine", "Nano Tank"
+    return None, "Unknown"
+
+
+@st.cache_data(ttl=300, show_spinner="Syncing Shopify orders…")
+def load_all_shopify():
+    """Load all Shopify tabs → long DataFrame: country, date, product, category, qty."""
+    creds = get_credentials()
+    svc   = build("sheets", "v4", credentials=creds)
+    tabs  = [("Shopify - UAE", "UAE"), ("Shopify - KSA", "KSA"), ("Shopify - USA", "USA")]
+    frames = []
+    for tab_name, country in tabs:
+        rows = (
+            svc.spreadsheets().values()
+            .get(spreadsheetId=SHEET_ID, range=f"'{tab_name}'")
+            .execute().get("values", [])
+        )
+        if len(rows) < 2:
+            continue
+        headers = [h.strip() for h in rows[0]]
+        if headers and headers[0] in ("", " "):
+            headers[0] = "Order ID"
+        n      = len(headers)
+        padded = [r[:n] + [""] * max(0, n - len(r)) for r in rows[1:]]
+        df     = pd.DataFrame(padded, columns=headers)
+
+        df["date"] = pd.to_datetime(
+            df.get("Created at", ""), errors="coerce"
+        ).dt.normalize()
+
+        records = []
+        for _, row in df.iterrows():
+            product, category, qty = "Unknown", None, 0
+            # Primary: unit columns (machine products)
+            for prod, own_col, sub_col in SHOPIFY_UNIT_COLS:
+                try:    own_v = int(str(row.get(own_col, 0) or 0))
+                except: own_v = 0
+                try:    sub_v = int(str(row.get(sub_col, 0) or 0))
+                except: sub_v = 0
+                if sub_v > 0 or own_v > 0:
+                    product, category, qty = prod, "Machine", max(sub_v, own_v)
+                    break
+            # Fallback: parse Lineitem name (catches filter subs etc.)
+            if product == "Unknown":
+                lineitem = str(row.get("Lineitem name", ""))
+                category, product = _shopify_product_from_name(lineitem)
+                if product != "Unknown":
+                    try:    qty = max(1, int(str(row.get("Lineitem quantity", 1) or 1)))
+                    except: qty = 1
+            records.append((product, category, qty))
+
+        if not records:
+            continue
+        prods, cats, qtys = zip(*records)
+        df["product"], df["category"], df["qty"] = prods, cats, qtys
+        df = df[df["product"] != "Unknown"].copy()
+        df["country"] = country
+        frames.append(df[["country", "date", "product", "category", "qty"]])
+
+    if not frames:
+        return pd.DataFrame(columns=["country", "date", "product", "category", "qty"])
+    return pd.concat(frames, ignore_index=True)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_recharge_cancellations():
+    """Load all Recharge rows (active + cancelled) for cancellation rate computation."""
+    creds = get_credentials()
+    svc   = build("sheets", "v4", credentials=creds)
+    frames = []
+    for tab, market in [("Recharge - UAE", "UAE"), ("Recharge - KSA", "KSA")]:
+        rows = (
+            svc.spreadsheets().values()
+            .get(spreadsheetId=SHEET_ID, range=tab)
+            .execute().get("values", [])
+        )
+        max_cols = max(len(r) for r in rows)
+        padded   = [r + [""] * (max_cols - len(r)) for r in rows]
+        df       = pd.DataFrame(padded[1:], columns=padded[0])
+        df["market"] = market
+        frames.append(df)
+    df = pd.concat(frames, ignore_index=True)
+    df["cancelled_at_dt"] = pd.to_datetime(
+        df["cancelled_at"].str.strip(), format="%d/%m/%Y", errors="coerce"
+    )
+    df["is_true_cancel"] = df["True Cancellation"].apply(
+        lambda x: str(x).strip() == "1"
+    )
+    df["category"] = df["product_title"].map(
+        lambda t: PRODUCT_MAP.get(t, (None, None))[0]
+    )
+    df["product"] = df["product_title"].map(
+        lambda t: PRODUCT_MAP.get(t, (None, None))[1]
+    )
+    return df[["subscription_id", "market", "status", "product_title",
+               "category", "product", "cancelled_at_dt", "is_true_cancel"]]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_monthly_sales_raw():
+    """Return raw values of the Monthly Sales tab (list-of-lists, cached)."""
+    creds = get_credentials()
+    svc   = build("sheets", "v4", credentials=creds)
+    return (
+        svc.spreadsheets().values()
+        .get(spreadsheetId=SHEET_ID, range="'Monthly Sales'")
+        .execute().get("values", [])
+    )
+
+
+def monthly_sales_series(vals, country="All", product="All"):
+    """
+    Extract (months_list, values_list) from raw Monthly Sales tab data.
+
+    Row layout (0-indexed in vals):
+      3  → Total Gross Sales (global)
+      6-10  → UAE Sub  (Model 1 … Nano Tank)
+      13-17 → UAE Own  (Model 1 … Nano Tank)
+      20    → Total UAE Sales
+      24-28 → KSA Sub  (Model 1 … Nano Tank)
+      31-35 → KSA Own  (Model 1 … Nano Tank)
+      38    → Total KSA Sales
+      63    → Paid Ads Spend (historical marketing spend)
+    """
+    if not vals:
+        return [], []
+
+    header = vals[0]
+    months, col_idxs = [], []
+    for i, h in enumerate(header[1:], start=1):
+        if h and not h.startswith("--"):
+            months.append(h)
+            col_idxs.append(i)
+
+    def row_vals(ri):
+        if ri >= len(vals): return [0] * len(months)
+        row = vals[ri]
+        out = []
+        for ci in col_idxs:
+            try:    out.append(int(row[ci]) if ci < len(row) and row[ci] else 0)
+            except: out.append(0)
+        return out
+
+    def sum_rows(*indices):
+        result = [0] * len(months)
+        for ri in indices:
+            for j, v in enumerate(row_vals(ri)):
+                result[j] += v
+        return result
+
+    pi = PRODUCT_ORDER.index(product) if product in PRODUCT_ORDER else -1
+
+    if country == "All" and product == "All": return months, row_vals(3)
+    if country == "UAE" and product == "All": return months, row_vals(20)
+    if country == "KSA" and product == "All": return months, row_vals(38)
+    if pi < 0:                                return months, row_vals(3)
+    if country == "UAE":  return months, sum_rows(6 + pi, 13 + pi)
+    if country == "KSA":  return months, sum_rows(24 + pi, 31 + pi)
+    # All countries, specific product
+    return months, sum_rows(6 + pi, 13 + pi, 24 + pi, 31 + pi)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_dashboard_kpis():
+    """Read pre-computed global KPIs from Dashboard Summary row 1."""
+    creds = get_credentials()
+    svc   = build("sheets", "v4", credentials=creds)
+    rows  = (
+        svc.spreadsheets().values()
+        .get(spreadsheetId=SHEET_ID, range="'Dashboard Summary'!A1:AB2")
+        .execute().get("values", [])
+    )
+    if len(rows) < 2:
+        return {}
+    data = rows[1]
+    def sg(i): return data[i] if i < len(data) else ""
+    return {
+        "monthly_target":    sg(10),  # col K
+        "cac":               sg(19),  # col T
+        "cancellation_rate": sg(14),  # col O
+        "arr":               sg(12),  # col M
+        "user_base":         sg(13),  # col N
+    }
+
+
 def sidebar_filters(refresh_key: str):
     """Render the shared sidebar and return (market_sel, category_sel)."""
     with st.sidebar:
