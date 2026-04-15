@@ -1,7 +1,6 @@
-"""
-Sales Dashboard page — all metrics from Recharge + Shopify + Marketing Spend.
-Loaded as a page via st.navigation() from dashboard.py.
-"""
+"""Sales Dashboard page — metrics from Recharge + Shopify + Marketing Spend."""
+
+from __future__ import annotations
 
 import calendar
 from datetime import date, timedelta

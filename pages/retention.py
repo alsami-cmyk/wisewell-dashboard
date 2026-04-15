@@ -1,10 +1,6 @@
-"""
-Retention Dashboard — cancellation analysis, reason breakdown, cohort retention.
-All data from Recharge source tabs (no Shopify needed).
+"""Retention Dashboard — cancellation analysis, reason breakdown, cohort retention."""
 
-Cancellation rate uses the Recharge definition:
-  churned subscribers ÷ average daily active subscribers over the period.
-"""
+from __future__ import annotations
 
 import calendar
 from datetime import date, timedelta

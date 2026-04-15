@@ -1,15 +1,12 @@
 """
 Shared constants, helpers, and data loaders.
 
-Architecture: every metric is computed directly from the six live source tabs —
-  Recharge-UAE, Recharge-KSA, Recharge-USA
-  Shopify-UAE,  Shopify-KSA,  Shopify-USA
-plus the Marketing Spend tab for CAC.
-No calculated / pre-aggregated tabs are read.
-
-Performance: all 7 tabs are fetched in parallel on first load (~2-4s instead of
-~12-20s sequential). Automatic retry on transient Google API errors.
+Architecture: every metric is computed directly from the live source tabs —
+  Recharge-UAE/KSA/USA, Shopify-UAE/KSA/USA, Marketing Spend, Monthly User Base.
+All 8 tabs fetched in parallel on first load. Automatic retry on transient errors.
 """
+
+from __future__ import annotations  # PEP 604 unions (str | None) on all Pythons
 
 import json
 import logging
