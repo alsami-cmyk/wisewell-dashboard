@@ -41,6 +41,8 @@ ALL_SOURCE_TABS = [
     "Shopify - UAE",  "Shopify - KSA",  "Shopify - USA",
     "Marketing Spend",
     "Monthly User Base",
+    "Monthly Sales",
+    "Monthly Cancellations",
 ]
 
 MAX_RETRIES   = 3
@@ -331,6 +333,12 @@ def load_recharge_full() -> pd.DataFrame:
 
     df = pd.concat(frames, ignore_index=True)
 
+    # ── Drop DELETED subscriptions entirely ───────────────────────────────────
+    # Deleted subs should not appear in the subscriber base, sales counts,
+    # or cancellation metrics — they are as if they never existed.
+    if "status" in df.columns:
+        df = df[df["status"].str.upper() != "DELETED"].copy()
+
     # ── Numeric cols ──────────────────────────────────────────────────────────
     for col, default in [
         ("recurring_price",           0.0),
@@ -610,6 +618,122 @@ def load_user_base_series() -> pd.DataFrame:
     # Only keep months where global > 0 (future months are 0)
     df = df[df["global"] > 0].sort_values("month_dt").reset_index(drop=True)
     return df
+
+
+def _parse_matrix_tab(
+    vals: list[list[str]],
+    row_map: dict[str, int],
+) -> pd.DataFrame:
+    """
+    Parse a pre-calculated tab that has months as columns (row 0) and
+    named data rows identified by 0-indexed row numbers.
+
+    row_map: {column_name: row_index}
+    Returns DataFrame with month_dt + one column per entry in row_map.
+    Only months where at least one value is non-zero are returned.
+    """
+    if not vals:
+        return pd.DataFrame()
+
+    header = vals[0]
+    month_indices: list[tuple[int, pd.Timestamp]] = []
+    for i, h in enumerate(header[1:], start=1):
+        h_str = str(h).strip()
+        if not h_str:
+            continue
+        try:
+            dt = pd.to_datetime(h_str, format="%b-%y")
+            month_indices.append((i, dt))
+        except Exception:
+            continue
+
+    if not month_indices:
+        return pd.DataFrame()
+
+    def _row(idx: int) -> list[int]:
+        row = vals[idx] if idx < len(vals) else []
+        out = []
+        for col_i, _ in month_indices:
+            try:
+                raw = str(row[col_i]).replace(",", "").replace("%", "").strip()
+                out.append(int(float(raw)) if raw else 0)
+            except Exception:
+                out.append(0)
+        return out
+
+    data: dict[str, list] = {"month_dt": [dt for _, dt in month_indices]}
+    for col_name, row_idx in row_map.items():
+        data[col_name] = _row(row_idx)
+
+    df = pd.DataFrame(data)
+    # Drop future months (all data cols zero)
+    value_cols = list(row_map.keys())
+    df = df[df[value_cols].sum(axis=1) > 0].copy()
+    return df.sort_values("month_dt").reset_index(drop=True)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_monthly_sales_tab() -> pd.DataFrame:
+    """
+    Monthly Sales tab → pre-calculated monthly sales by country and product.
+
+    Row layout (0-indexed):
+      3  → Total Gross Sales (global = UAE + KSA, no USA)
+      20 → Total UAE Sales
+      38 → Total KSA Sales
+      Product rows within UAE (subscriptions):
+        6=Model1, 7=Nano+, 8=Bubble, 9=Flat, 10=Nano Tank
+      Product rows within UAE (ownership):
+        13=Model1, 14=Nano+, 15=Bubble, 16=Flat, 17=Nano Tank
+
+    Returns DataFrame: month_dt, global, uae, ksa,
+      uae_model1_sub, uae_nanoplus_sub, uae_bubble_sub, uae_flat_sub, uae_nanotank_sub,
+      uae_model1_own, uae_nanoplus_own, uae_bubble_own, uae_flat_own, uae_nanotank_own
+    """
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    vals = raw_data.get("Monthly Sales", [])
+    return _parse_matrix_tab(vals, {
+        "global":           3,
+        "uae":              20,
+        "ksa":              38,
+        # UAE subscription by product
+        "uae_model1_sub":   6,
+        "uae_nanoplus_sub": 7,
+        "uae_bubble_sub":   8,
+        "uae_flat_sub":     9,
+        "uae_nanotank_sub": 10,
+        # UAE ownership by product
+        "uae_model1_own":   13,
+        "uae_nanoplus_own": 14,
+        "uae_bubble_own":   15,
+        "uae_flat_own":     16,
+        "uae_nanotank_own": 17,
+    })
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_monthly_cancellations_tab() -> pd.DataFrame:
+    """
+    Monthly Cancellations tab → pre-calculated monthly cancellations by country.
+
+    Row layout (0-indexed):
+      3  → Total Cancellations (global = UAE + KSA)
+      12 → Total UAE Cancellations  (machine cancels, excl. returns)
+      21 → Total UAE Cancellations & Returns
+      30 → Total KSA Cancellations
+      39 → Total KSA Cancellations & Returns
+
+    Returns DataFrame: month_dt, global, uae, uae_and_returns, ksa, ksa_and_returns
+    """
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    vals = raw_data.get("Monthly Cancellations", [])
+    return _parse_matrix_tab(vals, {
+        "global":           3,
+        "uae":              12,
+        "uae_and_returns":  21,
+        "ksa":              30,
+        "ksa_and_returns":  39,
+    })
 
 
 def get_load_diagnostics() -> tuple[dict[str, str], float]:

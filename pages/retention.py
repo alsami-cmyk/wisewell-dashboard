@@ -119,20 +119,25 @@ with pc3:
 st.markdown("---")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Helper: compute churn rate for a date range using the Recharge definition
-#   churn rate = churned_in_period / avg_daily_active_subs
+# Helper: compute cancellation rate for a date range
+#   cancellation rate = cancellations_in_period / active_subs_at_start_of_period
 #
-# A subscription is "active on day D" if:
-#   created_at_dt <= D  AND  (cancelled_at_dt is NaT  OR  cancelled_at_dt > D)
+# For the current (partial) calendar month the rate is extrapolated to a
+# full-month equivalent:
+#   extrapolated_cancels = mtd_cancels * (days_in_month / days_elapsed)
+#   rate = extrapolated_cancels / active_at_start
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _compute_churn_metrics(
     df_machine: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp
 ) -> dict:
     """
-    Returns dict with: churned, avg_daily_active, churn_rate, active_at_end.
-    Uses the Recharge definition: churned / avg daily active subscribers.
+    Returns dict with: churned, active_at_start, churn_rate, active_at_end.
+    Denominator = machine subs active at the start of the period.
+    Current partial month is extrapolated to a full-month rate.
     """
+    _today = pd.Timestamp.today().normalize()
+
     # Churned = true cancellations within [start, end]
     churned = df_machine[
         df_machine["is_true_cancel"]
@@ -141,30 +146,44 @@ def _compute_churn_metrics(
         & (df_machine["cancelled_at_dt"] <= end)
     ].shape[0]
 
-    # Average daily active subscribers over the period
+    # Active at start of period
     has_created = df_machine[df_machine["created_at_dt"].notna()]
-    day_range   = pd.date_range(start, end, freq="D")
-    daily_counts = []
+    active_at_start = has_created[
+        (has_created["created_at_dt"] <= start)
+        & (
+            has_created["cancelled_at_dt"].isna()
+            | (has_created["cancelled_at_dt"] > start)
+        )
+    ]["subscription_id"].nunique()
 
-    for d in day_range:
-        active_on_d = has_created[
-            (has_created["created_at_dt"] <= d)
-            & (
-                has_created["cancelled_at_dt"].isna()
-                | (has_created["cancelled_at_dt"] > d)
-            )
-        ]["subscription_id"].nunique()
-        daily_counts.append(active_on_d)
+    # Active at end of period (for KPI display)
+    active_at_end = has_created[
+        (has_created["created_at_dt"] <= end)
+        & (
+            has_created["cancelled_at_dt"].isna()
+            | (has_created["cancelled_at_dt"] > end)
+        )
+    ]["subscription_id"].nunique()
 
-    avg_daily = sum(daily_counts) / len(daily_counts) if daily_counts else 0
-    active_end = daily_counts[-1] if daily_counts else 0
-    rate = churned / avg_daily if avg_daily > 0 else 0.0
+    # Extrapolate if the period ends in the current (incomplete) calendar month
+    cur_month_start = _today.replace(day=1)
+    days_in_month   = calendar.monthrange(_today.year, _today.month)[1]
+    is_partial_month = (
+        end >= cur_month_start
+        and _today.day < days_in_month
+    )
+
+    if is_partial_month and _today.day > 0:
+        extrapolated_cancels = churned * days_in_month / _today.day
+        rate = extrapolated_cancels / active_at_start if active_at_start > 0 else 0.0
+    else:
+        rate = churned / active_at_start if active_at_start > 0 else 0.0
 
     return {
-        "churned":          churned,
-        "avg_daily_active": round(avg_daily, 1),
-        "churn_rate":       rate,
-        "active_at_end":    active_end,
+        "churned":        churned,
+        "active_at_start": active_at_start,
+        "churn_rate":     rate,
+        "active_at_end":  active_at_end,
     }
 
 
@@ -193,11 +212,11 @@ else:
 k1, k2, k3, k4, k5 = st.columns(5)
 
 k1.metric(
-    "Churn Rate",
+    "Cancellation Rate",
     f"{m_main['churn_rate']:.2%}",
     delta=f"{delta_rate:+.2%}",
     delta_color="inverse",
-    help="Churned ÷ avg daily active subscribers (Recharge definition)",
+    help="Cancellations ÷ active subs at start of period. Current month is extrapolated to a full-month rate.",
 )
 k2.metric(
     "Cancellations",
@@ -206,9 +225,9 @@ k2.metric(
     delta_color="inverse",
 )
 k3.metric(
-    "Avg Daily Active",
-    f"{m_main['avg_daily_active']:,.0f}",
-    help="Average daily active machine subscribers across the period",
+    "Active at Start",
+    f"{m_main['active_at_start']:,.0f}",
+    help="Machine subscriptions active at the start of the reporting period",
 )
 k4.metric(
     "Avg Lifetime",
@@ -504,8 +523,10 @@ else:
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("---")
 notes = [
-    "**Churn rate** = churned subscribers ÷ average daily active machine "
-    "subscribers over the reporting period (Recharge definition).",
+    "**Cancellation rate** = cancellations in period ÷ active machine "
+    "subscriptions at the start of the period. "
+    "The current (partial) month is extrapolated to a full-month rate: "
+    "(MTD cancellations ÷ days elapsed) × days in month ÷ starting base.",
     "**Compare to** period is the same number of days immediately before "
     "the main period.",
     "**Avg lifetime** = mean months between subscription creation and "

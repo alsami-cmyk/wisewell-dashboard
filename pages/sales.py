@@ -9,13 +9,12 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from dateutil.relativedelta import relativedelta
 
 from utils import (
     PRODUCT_COLOR, PRODUCT_ORDER,
     fmt_usd, get_fx, get_load_diagnostics,
     load_recharge_full, load_shopify_all, load_marketing_spend,
-    load_user_base_series,
+    load_user_base_series, load_monthly_sales_tab, load_monthly_cancellations_tab,
 )
 
 # ── Read sidebar filter state ─────────────────────────────────────────────────
@@ -32,11 +31,13 @@ else:
 
 # ── Load source data (cached 5 min, parallel fetch) ──────────────────────────
 try:
-    rc_full = load_recharge_full()
-    sh_all  = load_shopify_all()
-    mkt     = load_marketing_spend()
-    ub      = load_user_base_series()
-    fx      = get_fx()
+    rc_full  = load_recharge_full()
+    sh_all   = load_shopify_all()
+    mkt      = load_marketing_spend()
+    ub       = load_user_base_series()
+    ms_tab   = load_monthly_sales_tab()
+    mc_tab   = load_monthly_cancellations_tab()
+    fx       = get_fx()
 
     errors, fetch_time = get_load_diagnostics()
     if errors:
@@ -93,27 +94,34 @@ mom_sales   = int(
 mom_delta  = mtd_sales - mom_sales
 daily_avg  = mtd_sales / days_elapsed if days_elapsed > 0 else 0.0
 
-# ── Active Users (from Monthly User Base tab) ────────────────────────────────
-# User Base = cumulative running total of active subs + owners, maintained in the
-# Monthly User Base calculated tab.  This is the authoritative source.
-active_rc = rc[rc["status"] == "ACTIVE"]
+# ── Active Users ──────────────────────────────────────────────────────────────
+# UAE + KSA: Monthly User Base tab (authoritative — includes offline + online).
+# USA: Recharge ACTIVE machine subs (no pre-calculated tab yet).
+# Global: UAE + KSA (tab) + USA (Recharge).
+active_rc     = rc[rc["status"] == "ACTIVE"]
+usa_rc_active = rc_full[
+    (rc_full["status"] == "ACTIVE")
+    & (rc_full["market"] == "USA")
+    & (rc_full["category"] == "Machine")
+]["subscription_id"].nunique()
 
 if not ub.empty:
-    # Derive USA = Global − UAE − KSA (not tracked separately in the tab)
-    ub["usa"] = (ub["global"] - ub["uae"] - ub["ksa"]).clip(lower=0)
-
     if country_sel == "UAE":
         total_users = int(ub["uae"].iloc[-1])
+        users_note  = ""
     elif country_sel == "KSA":
         total_users = int(ub["ksa"].iloc[-1])
+        users_note  = ""
     elif country_sel == "USA":
-        total_users = int(ub["usa"].iloc[-1])
+        total_users = usa_rc_active
+        users_note  = " (subs only)"
     else:
-        total_users = int(ub["global"].iloc[-1])
-    users_note = ""
+        # Global = Monthly User Base global (UAE+KSA) + USA from Recharge
+        total_users = int(ub["global"].iloc[-1]) + usa_rc_active
+        users_note  = ""
 else:
     total_users = active_rc[active_rc["category"] == "Machine"]["subscription_id"].nunique()
-    users_note = " (subs only)"
+    users_note  = " (subs only)"
 
 # ── ARR ───────────────────────────────────────────────────────────────────────
 total_arr = float(active_rc["arr_usd"].sum())
@@ -165,88 +173,89 @@ else:
     cac_note    = " (spend tab empty)"
 
 # ── Cancellation rate ─────────────────────────────────────────────────────────
+# Formula: (extrapolated MTD cancels) / (active machine subs at start of month)
+# Extrapolated MTD = mtd_cancels * (days_in_month / days_elapsed)
 cc_machine  = rc[rc["category"] == "Machine"]
 mtd_cancels = int(cc_machine[
     cc_machine["is_true_cancel"]
+    & cc_machine["cancelled_at_dt"].notna()
     & (cc_machine["cancelled_at_dt"] >= month_start)
     & (cc_machine["cancelled_at_dt"] <= today)
 ].shape[0])
 
-active_mach_for_rate = (
-    rc[(rc["status"] == "ACTIVE") & (rc["category"] == "Machine")]
-    ["subscription_id"].nunique()
-)
-cr = mtd_cancels / active_mach_for_rate if active_mach_for_rate > 0 else 0.0
+_has_created = cc_machine[cc_machine["created_at_dt"].notna()]
+active_at_month_start = _has_created[
+    (_has_created["created_at_dt"] <= month_start)
+    & (
+        _has_created["cancelled_at_dt"].isna()
+        | (_has_created["cancelled_at_dt"] > month_start)
+    )
+]["subscription_id"].nunique()
+
+extrapolated_cancels = mtd_cancels * days_in_month / max(1, days_elapsed)
+cr = extrapolated_cancels / active_at_month_start if active_at_month_start > 0 else 0.0
 cancel_rate_str = f"{cr:.2%}"
 
-# ── Monthly chart (hybrid) ────────────────────────────────────────────────────
-LIVE_CUTOFF = pd.Timestamp("2025-09-01")
+# ── Monthly chart — from pre-calculated Monthly Sales tab ────────────────────
+# UAE and KSA come from the spreadsheet's own calculated tab (authoritative,
+# includes offline + online, correct product mapping).
+# USA comes from Shopify - USA (the tab has no USA rows).
+# For Global ("All"), we sum all three.
 
-rc_for_hist = rc_full[
-    (rc_full["category"] == "Machine")
-    & rc_full["created_at_dt"].notna()
-    & (rc_full["created_at_dt"] < LIVE_CUTOFF)
-].copy()
-if country_sel != "All":
-    rc_for_hist = rc_for_hist[rc_for_hist["market"] == country_sel]
-if product_sel != "All":
-    rc_for_hist = rc_for_hist[rc_for_hist["product"] == product_sel]
+# Pick the right column from the Monthly Sales tab
+if not ms_tab.empty:
+    if country_sel == "UAE":
+        ms_col = "uae"
+    elif country_sel == "KSA":
+        ms_col = "ksa"
+    else:
+        ms_col = "global"   # UAE + KSA; USA appended below
 
-if not rc_for_hist.empty:
-    hist_agg = (
-        rc_for_hist
-        .assign(mp=lambda d: d["created_at_dt"].dt.to_period("M"))
-        .groupby("mp").size()
-        .reset_index(name="qty")
-    )
-    hist_agg["label"]    = hist_agg["mp"].dt.strftime("%b-%y")
-    hist_agg["month_dt"] = hist_agg["mp"].dt.to_timestamp()
+    ms_chart = ms_tab[["month_dt", ms_col]].copy()
+    ms_chart = ms_chart.rename(columns={ms_col: "qty"})
+    ms_chart["label"] = ms_chart["month_dt"].dt.strftime("%b-%y")
 else:
-    hist_agg = pd.DataFrame(columns=["label", "month_dt", "qty"])
+    ms_chart = pd.DataFrame(columns=["month_dt", "qty", "label"])
 
-sh_live = sh_all[sh_all["date"] >= LIVE_CUTOFF].copy()
-if country_sel != "All":
-    sh_live = sh_live[sh_live["country"] == country_sel]
+# USA monthly sales (Shopify - USA, all time)
+sh_usa = sh_all[sh_all["country"] == "USA"].copy()
 if product_sel != "All":
-    sh_live = sh_live[sh_live["product"] == product_sel]
+    sh_usa = sh_usa[sh_usa["product"] == product_sel]
 
-if not sh_live.empty:
-    live_agg = (
-        sh_live
+if not sh_usa.empty:
+    usa_monthly = (
+        sh_usa
         .assign(mp=lambda d: d["date"].dt.to_period("M"))
         .groupby("mp")["qty"].sum()
         .reset_index()
     )
-    live_agg["label"]    = live_agg["mp"].dt.strftime("%b-%y")
-    live_agg["month_dt"] = live_agg["mp"].dt.to_timestamp()
+    usa_monthly["month_dt"] = usa_monthly["mp"].dt.to_timestamp()
+    usa_monthly["label"]    = usa_monthly["mp"].dt.strftime("%b-%y")
 else:
-    live_agg = pd.DataFrame(columns=["label", "month_dt", "qty"])
+    usa_monthly = pd.DataFrame(columns=["month_dt", "qty", "label"])
 
-live_set = set(live_agg["label"])
-fill_rows = []
-cur = LIVE_CUTOFF
-while cur <= today:
-    lbl = cur.strftime("%b-%y")
-    if lbl not in live_set:
-        fill_rows.append({"label": lbl, "month_dt": cur, "qty": 0})
-    cur += relativedelta(months=1)
-if fill_rows:
-    live_agg = pd.concat([live_agg, pd.DataFrame(fill_rows)], ignore_index=True)
+# Combine based on filter
+if country_sel == "USA":
+    all_monthly = usa_monthly[["month_dt", "qty", "label"]].copy()
+elif country_sel in ("UAE", "KSA"):
+    all_monthly = ms_chart[["month_dt", "qty", "label"]].copy()
+else:
+    # Global = pre-calculated tab (UAE+KSA) + USA
+    combined = pd.merge(
+        ms_chart[["month_dt", "qty", "label"]],
+        usa_monthly[["month_dt", "qty"]].rename(columns={"qty": "usa_qty"}),
+        on="month_dt", how="outer",
+    ).fillna(0)
+    combined["qty"]   = combined["qty"] + combined["usa_qty"]
+    combined["label"] = combined["month_dt"].dt.strftime("%b-%y")
+    all_monthly = combined[["month_dt", "qty", "label"]].copy()
 
-all_monthly = (
-    pd.concat(
-        [hist_agg[["label", "month_dt", "qty"]],
-         live_agg[["label", "month_dt", "qty"]]],
-        ignore_index=True,
-    )
-    .sort_values("month_dt")
-    .reset_index(drop=True)
-)
+all_monthly = all_monthly.sort_values("month_dt").reset_index(drop=True)
 
 mask = (all_monthly["month_dt"] >= chart_start) & (all_monthly["month_dt"] <= chart_end)
 chart_data     = all_monthly[mask].copy()
 chart_months_f = chart_data["label"].tolist()
-chart_vals_f   = chart_data["qty"].tolist()
+chart_vals_f   = chart_data["qty"].astype(int).tolist()
 
 # ── Header ────────────────────────────────────────────────────────────────────
 parts    = [p for p in [
@@ -269,11 +278,22 @@ k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("Today's Sales",     f"{today_sales:,}")
 k2.metric(f"Active Users{users_note}", f"{total_users:,}")
 k3.metric("ARR",               fmt_usd(total_arr))
-k4.metric("Cancellation Rate", cancel_rate_str)
+k4.metric("Cancellation Rate", cancel_rate_str,
+          help="Extrapolated monthly cancellation rate: (MTD cancels ÷ days elapsed × days in month) ÷ active machine subs at start of month")
 k5.metric("CAC" + cac_note,    cac_display,
           help="Marketing Spend ÷ New Machine Customers (subs + ownership orders) MTD")
 k6.metric("New This Month",    f"{new_customers_mtd:,}",
           help="New Recharge machine subscriptions + Shopify ownership orders MTD")
+
+with st.expander("🔍 Cancellation rate breakdown", expanded=False):
+    st.markdown(
+        f"| | |\n|---|---|\n"
+        f"| MTD true cancellations | **{mtd_cancels}** |\n"
+        f"| Days elapsed / days in month | **{days_elapsed} / {days_in_month}** |\n"
+        f"| Extrapolated full-month cancels | **{extrapolated_cancels:.1f}** |\n"
+        f"| Active machine subs at month start | **{active_at_month_start:,}** |\n"
+        f"| **Cancellation rate** | **{cr:.4%}** |"
+    )
 
 st.markdown("---")
 
@@ -286,15 +306,9 @@ with c_chart:
         try:
             m      = pd.to_datetime(ml, format="%b-%y")
             is_cur = (m.year == today.year and m.month == today.month)
-            is_hist = m < LIVE_CUTOFF
         except Exception:
-            is_cur = is_hist = False
-        if is_cur:
-            bar_colors.append("#7dd3fc")
-        elif is_hist:
-            bar_colors.append("#6366f1")
-        else:
-            bar_colors.append("#0ea5e9")
+            is_cur = False
+        bar_colors.append("#7dd3fc" if is_cur else "#0ea5e9")
 
     fig_m = go.Figure(go.Bar(
         x=chart_months_f, y=chart_vals_f,
@@ -306,13 +320,7 @@ with c_chart:
     ))
     fig_m.update_layout(
         title=dict(
-            text=(
-                "Monthly Sales  "
-                '<span style="font-size:10px;color:#94a3b8;">'
-                "◼ <span style='color:#6366f1'>pre-Sep-25 (Recharge)</span>"
-                "  ◼ <span style='color:#0ea5e9'>Sep-25+ (Shopify)</span>"
-                "</span>"
-            ),
+            text="Monthly Sales",
             x=0, font=dict(size=13, color="#e2e5f0"),
         ),
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
@@ -419,28 +427,41 @@ with c_donut:
 if not ub.empty:
     st.markdown("---")
 
-    # Pick the right column for the selected country
+    # UAE + KSA come from Monthly User Base tab.
+    # Global = tab global (UAE+KSA) + USA Recharge ACTIVE.
+    # USA comes from Recharge only (no historical series yet).
     if country_sel == "UAE":
         ub_col, ub_label = "uae", "UAE User Base"
+        ub_chart = ub[ub["month_dt"] >= chart_start].copy()
+        ub_y_col = ub_col
     elif country_sel == "KSA":
         ub_col, ub_label = "ksa", "KSA User Base"
+        ub_chart = ub[ub["month_dt"] >= chart_start].copy()
+        ub_y_col = ub_col
     elif country_sel == "USA":
-        ub_col, ub_label = "usa", "USA User Base"
+        # No monthly series — skip the chart
+        ub_chart = pd.DataFrame()
+        ub_label = "USA User Base"
+        ub_y_col = None
     else:
-        ub_col, ub_label = "global", "Total User Base"
+        ub_label = "Total User Base"
+        ub_chart = ub[ub["month_dt"] >= chart_start].copy()
+        # Add USA active subs as a flat increment (no historical series)
+        ub_chart = ub_chart.copy()
+        ub_chart["total_with_usa"] = ub_chart["global"] + usa_rc_active
+        ub_y_col = "total_with_usa"
 
-    ub_chart = ub[ub["month_dt"] >= chart_start].copy()
-    if not ub_chart.empty:
+    if not ub_chart.empty and ub_y_col:
         ub_chart["label"] = ub_chart["month_dt"].dt.strftime("%b-%y")
 
         fig_ub = go.Figure()
         fig_ub.add_trace(go.Scatter(
             x=ub_chart["label"],
-            y=ub_chart[ub_col],
+            y=ub_chart[ub_y_col],
             mode="lines+markers+text",
             line=dict(color="#8b5cf6", width=2.5),
             marker=dict(size=6, color="#8b5cf6"),
-            text=[f"{v:,}" for v in ub_chart[ub_col]],
+            text=[f"{v:,}" for v in ub_chart[ub_y_col]],
             textposition="top center",
             textfont=dict(size=9, color="#94a3b8"),
             hovertemplate="<b>%{x}</b><br>%{y:,} users<extra></extra>",
