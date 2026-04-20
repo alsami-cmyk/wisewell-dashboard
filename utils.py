@@ -43,6 +43,7 @@ ALL_SOURCE_TABS = [
     "Monthly User Base",
     "Monthly Sales",
     "Monthly Cancellations",
+    "Daily Sales",
 ]
 
 MAX_RETRIES   = 3
@@ -734,6 +735,95 @@ def load_monthly_cancellations_tab() -> pd.DataFrame:
         "ksa":              30,
         "ksa_and_returns":  39,
     })
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_daily_sales_tab() -> pd.DataFrame:
+    """
+    Daily Sales tab → day-by-day machine sales (pre-calculated, matches reference
+    dashboard). Covers Sep-2025 onwards, supersedes raw Shopify for UAE/KSA/Global.
+
+    Column structure: row 0 = day labels ('1-Sep', '2-Sep', ..., '30-Apr', ...)
+    Key rows (0-indexed):
+      21 → Total UAE Sales
+      39 → Total KSA Sales
+      62 → Global Sales (UAE + KSA)
+
+    Months Sep–Dec belong to the most-recent Sep year; Jan–Aug to the year after.
+    Returns DataFrame: date (Timestamp, daily), uae, ksa, global
+    Only days with at least one non-zero value are returned.
+    """
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    vals = raw_data.get("Daily Sales", [])
+    if not vals:
+        return pd.DataFrame(columns=["date", "uae", "ksa", "global"])
+
+    header = vals[0]
+
+    # Determine which year the Sep column belongs to.
+    # Logic: the tab runs Sep–Aug. If today is in Sep–Dec, the tab's Sep = this year.
+    # Otherwise Sep = last year.
+    today = pd.Timestamp.today()
+    sep_year = today.year if today.month >= 9 else today.year - 1
+
+    month_to_year: dict[str, int] = {}
+    for m in ["Sep", "Oct", "Nov", "Dec"]:
+        month_to_year[m] = sep_year
+    for m in ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug"]:
+        month_to_year[m] = sep_year + 1
+
+    # Build (col_index, date) pairs from the header
+    col_dates: list[tuple[int, pd.Timestamp]] = []
+    for i, h in enumerate(header[1:], start=1):
+        h_str = str(h).strip()
+        if "-" not in h_str:
+            continue
+        parts = h_str.split("-")
+        if len(parts) != 2:
+            continue
+        day_str, month_str = parts
+        year = month_to_year.get(month_str)
+        if year is None:
+            continue
+        try:
+            dt = pd.Timestamp(
+                year=year,
+                month=pd.to_datetime(month_str, format="%b").month,
+                day=int(day_str),
+            )
+            col_dates.append((i, dt))
+        except Exception:
+            continue
+
+    if not col_dates:
+        return pd.DataFrame(columns=["date", "uae", "ksa", "global"])
+
+    def _row_vals(row_idx: int) -> list[int]:
+        row = vals[row_idx] if row_idx < len(vals) else []
+        out = []
+        for col_i, _ in col_dates:
+            try:
+                raw = str(row[col_i]).replace(",", "").strip() if col_i < len(row) else ""
+                out.append(int(raw) if raw else 0)
+            except Exception:
+                out.append(0)
+        return out
+
+    uae_vals    = _row_vals(21)
+    ksa_vals    = _row_vals(39)
+    global_vals = _row_vals(62)
+
+    df = pd.DataFrame({
+        "date":   [dt for _, dt in col_dates],
+        "uae":    uae_vals,
+        "ksa":    ksa_vals,
+        "global": global_vals,
+    })
+
+    # Drop future / empty dates
+    df = df[df[["uae", "ksa", "global"]].sum(axis=1) > 0].copy()
+    df = df[df["date"] <= today].copy()
+    return df.sort_values("date").reset_index(drop=True)
 
 
 def get_load_diagnostics() -> tuple[dict[str, str], float]:

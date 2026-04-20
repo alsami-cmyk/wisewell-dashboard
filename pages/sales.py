@@ -15,6 +15,7 @@ from utils import (
     fmt_usd, get_fx, get_load_diagnostics,
     load_recharge_full, load_shopify_all, load_marketing_spend,
     load_user_base_series, load_monthly_sales_tab, load_monthly_cancellations_tab,
+    load_daily_sales_tab,
 )
 
 # ── Read sidebar filter state ─────────────────────────────────────────────────
@@ -37,6 +38,7 @@ try:
     ub       = load_user_base_series()
     ms_tab   = load_monthly_sales_tab()
     mc_tab   = load_monthly_cancellations_tab()
+    ds_tab   = load_daily_sales_tab()
     fx       = get_fx()
 
     errors, fetch_time = get_load_diagnostics()
@@ -84,13 +86,26 @@ days_elapsed   = today.day
 days_in_month  = calendar.monthrange(today.year, today.month)[1]
 days_remaining = max(1, days_in_month - days_elapsed + 1)
 
-# ── Sales KPIs ────────────────────────────────────────────────────────────────
-today_sales = int(sh[sh["date"] == today]["qty"].sum())
-mtd_sales   = int(sh[sh["date"] >= month_start]["qty"].sum())
-mom_cutoff  = prev_m_start + timedelta(days=days_elapsed - 1)
-mom_sales   = int(
-    sh[(sh["date"] >= prev_m_start) & (sh["date"] <= mom_cutoff)]["qty"].sum()
-)
+# ── Sales KPIs — from pre-calculated Daily Sales tab ─────────────────────────
+# The Daily Sales tab applies the same business logic as the reference dashboard
+# (filters out non-machine units, returns, etc.) unlike raw Shopify which over-counts.
+# UAE/KSA/Global use the tab; USA falls back to raw Shopify-USA (no tab row yet).
+
+_prev_mom_end = prev_m_start + timedelta(days=days_elapsed - 1)
+
+if not ds_tab.empty and country_sel != "USA":
+    _col = "uae" if country_sel == "UAE" else "ksa" if country_sel == "KSA" else "global"
+    today_sales = int(ds_tab[ds_tab["date"] == today][_col].sum())
+    mtd_sales   = int(ds_tab[ds_tab["date"] >= month_start][_col].sum())
+    mom_sales   = int(ds_tab[
+        (ds_tab["date"] >= prev_m_start) & (ds_tab["date"] <= _prev_mom_end)
+    ][_col].sum())
+else:
+    # USA or tab unavailable: fall back to raw Shopify
+    today_sales = int(sh[sh["date"] == today]["qty"].sum())
+    mtd_sales   = int(sh[sh["date"] >= month_start]["qty"].sum())
+    mom_sales   = int(sh[(sh["date"] >= prev_m_start) & (sh["date"] <= _prev_mom_end)]["qty"].sum())
+
 mom_delta  = mtd_sales - mom_sales
 daily_avg  = mtd_sales / days_elapsed if days_elapsed > 0 else 0.0
 
@@ -349,12 +364,22 @@ c_daily, c_donut = st.columns([3, 2])
 
 with c_daily:
     thirty_ago = today - timedelta(days=29)
-    daily_agg  = (
-        sh[sh["date"] >= thirty_ago]
-        .groupby("date")["qty"].sum()
-        .reset_index()
-        .rename(columns={"qty": "sales"})
-    )
+
+    # Use pre-calculated Daily Sales tab for UAE/KSA/Global; Shopify-USA for USA
+    if not ds_tab.empty and country_sel != "USA":
+        _col = "uae" if country_sel == "UAE" else "ksa" if country_sel == "KSA" else "global"
+        daily_agg = (
+            ds_tab[ds_tab["date"] >= thirty_ago][["date", _col]]
+            .rename(columns={_col: "sales"})
+        )
+    else:
+        daily_agg = (
+            sh[sh["date"] >= thirty_ago]
+            .groupby("date")["qty"].sum()
+            .reset_index()
+            .rename(columns={"qty": "sales"})
+        )
+
     all_dates  = pd.date_range(thirty_ago, today, freq="D").normalize()
     daily_full = (
         pd.DataFrame({"date": all_dates})
@@ -364,7 +389,7 @@ with c_daily:
     daily_full["sales"] = daily_full["sales"].astype(int)
     daily_full["label"] = daily_full["date"].dt.strftime("%-d %b")
     daily_full["color"] = daily_full["date"].apply(
-        lambda d: "#7dd3fc" if d == today else "#6366f1"
+        lambda d: "#7dd3fc" if d == today else "#0ea5e9"
     )
 
     fig_d = go.Figure(go.Bar(
