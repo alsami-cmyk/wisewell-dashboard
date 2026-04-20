@@ -3,6 +3,12 @@ Wisewell Dashboard — entry point.
 Renders the shared sidebar and routes to Sales / Retention pages.
 """
 
+# Streamlit hot-reload re-runs this script without restarting Python, which can
+# leave a stale version of utils in sys.modules. Evicting it here forces a fresh
+# import every time so the latest function definitions are always used.
+import sys
+sys.modules.pop("utils", None)
+
 from datetime import date
 
 import streamlit as st
