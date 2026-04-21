@@ -707,23 +707,25 @@ def load_shopify_store_analytics() -> pd.DataFrame:
     """
     Online store performance metrics (MTD) from all configured Shopify stores.
 
-    Always available (all plans):
+    Always available (all plans, requires read_orders scope):
         orders (int)          — Shopify orders placed MTD
         revenue_local (float) — gross revenue in local currency
         aov_local (float)     — average order value in local currency
 
-    Requires Shopify Advanced / Plus (ShopifyQL):
+    Requires Shopify Advanced / Plus + read_analytics scope (ShopifyQL):
         sessions (int)          — store sessions MTD
         conversion_rate (float) — sessions → orders rate
 
-    Returns: market, orders, revenue_local, aov_local, sessions, conversion_rate, configured
-    Falls back gracefully to showing only order data if credentials missing or plan too low.
+    Returns columns:
+        market, orders, revenue_local, aov_local, sessions, conversion_rate,
+        configured, missing_scopes (list[str]), sessions_unavailable_reason (str)
     """
     creds = _shopify_creds()
     if not creds:
         return pd.DataFrame(columns=[
             "market", "orders", "revenue_local", "aov_local",
             "sessions", "conversion_rate", "configured",
+            "missing_scopes", "sessions_unavailable_reason",
         ])
 
     today       = pd.Timestamp.today()
@@ -738,7 +740,28 @@ def load_shopify_store_analytics() -> pd.DataFrame:
         rec: dict = {
             "market": market, "orders": 0, "revenue_local": 0.0, "aov_local": 0.0,
             "sessions": None, "conversion_rate": None, "configured": True,
+            "missing_scopes": [], "sessions_unavailable_reason": "",
         }
+
+        # ── Check granted scopes first ────────────────────────────────────────
+        try:
+            scope_resp   = _shopify_rest(store, token, "access_scopes.json")
+            granted      = {s.get("handle", "") for s in scope_resp.get("access_scopes", [])}
+            missing      = []
+            if "read_orders" not in granted:
+                missing.append("read_orders")
+            if "read_analytics" not in granted:
+                missing.append("read_analytics")
+            rec["missing_scopes"] = missing
+            if missing:
+                logger.warning(
+                    "Shopify %s token missing scopes: %s. "
+                    "Re-install the custom app after adding these scopes.",
+                    market, missing,
+                )
+        except Exception as scope_err:
+            logger.info("Could not fetch scopes for %s: %s", market, scope_err)
+
         try:
             # ── Orders count MTD ──────────────────────────────────────────────
             cnt = _shopify_rest(store, token, "orders/count.json", {
@@ -746,7 +769,11 @@ def load_shopify_store_analytics() -> pd.DataFrame:
                 "created_at_min": m_start_str,
                 "created_at_max": today_str,
             })
-            rec["orders"] = int(cnt.get("count", 0))
+            # Shopify returns {"errors":...} (HTTP 200) when scope is missing
+            if "errors" in cnt:
+                logger.warning("Shopify orders/count for %s returned errors: %s", market, cnt["errors"])
+            else:
+                rec["orders"] = int(cnt.get("count", 0))
 
             # ── Revenue + AOV (first 250 orders; enough for monthly view) ─────
             ords = _shopify_rest(store, token, "orders.json", {
@@ -770,26 +797,39 @@ def load_shopify_store_analytics() -> pd.DataFrame:
                     '") { result { headers rowData } } }'
                 )
                 gql    = _shopify_graphql(store, token, ql_query)
-                result = (
-                    gql.get("data", {})
-                    .get("analyticsReport", {})
-                    .get("result", {})
-                )
-                headers  = result.get("headers", [])
-                row_data = result.get("rowData", [])
-                if headers and row_data:
-                    h   = {v.lower(): i for i, v in enumerate(headers)}
-                    row = row_data[0]
-                    if "sessions" in h:
-                        rec["sessions"] = int(float(row[h["sessions"]]))
-                    if "conversion_rate" in h:
-                        cr = float(row[h["conversion_rate"]])
-                        # Shopify returns e.g. 3.2 (meaning 3.2%) — normalise to 0–1
-                        rec["conversion_rate"] = cr / 100 if cr > 1 else cr
+                # Surface any GraphQL errors
+                gql_errors = gql.get("errors") or []
+                if gql_errors:
+                    reason = "; ".join(
+                        e.get("message", str(e)) for e in gql_errors
+                    )
+                    rec["sessions_unavailable_reason"] = reason
+                    logger.info("ShopifyQL errors for %s: %s", market, reason)
+                else:
+                    result = (
+                        gql.get("data", {})
+                        .get("analyticsReport", {})
+                        .get("result", {})
+                    )
+                    headers  = result.get("headers", [])
+                    row_data = result.get("rowData", [])
+                    if headers and row_data:
+                        h   = {v.lower(): i for i, v in enumerate(headers)}
+                        row = row_data[0]
+                        if "sessions" in h:
+                            rec["sessions"] = int(float(row[h["sessions"]]))
+                        if "conversion_rate" in h:
+                            cr = float(row[h["conversion_rate"]])
+                            # Shopify returns e.g. 3.2 (meaning 3.2%) — normalise to 0–1
+                            rec["conversion_rate"] = cr / 100 if cr > 1 else cr
+                    else:
+                        rec["sessions_unavailable_reason"] = "No data returned by ShopifyQL"
             except Exception as gql_err:
+                reason = str(gql_err)
+                rec["sessions_unavailable_reason"] = reason
                 logger.info(
                     "ShopifyQL sessions not available for %s (%s) — order data only.",
-                    market, gql_err,
+                    market, reason,
                 )
 
         except Exception as exc:

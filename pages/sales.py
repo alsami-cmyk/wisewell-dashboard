@@ -460,6 +460,19 @@ if shopify_df.empty:
         "to Streamlit Cloud secrets to enable this section."
     )
 else:
+    # ── Scope warnings (show once, above the metrics) ─────────────────────
+    for _, _srow in shopify_df.iterrows():
+        _missing = _srow.get("missing_scopes") or []
+        if _missing:
+            st.warning(
+                f"⚠️  **{_srow['market']} Shopify token is missing API scopes: "
+                f"`{'`, `'.join(_missing)}`**  \n"
+                "In Shopify Admin → Settings → Apps → your custom app → Configuration → "
+                "add the missing scopes → Save → re-install app → copy new token → "
+                "update Streamlit Cloud secrets.",
+                icon="🔑",
+            )
+
     # Apply country filter
     shop = shopify_df.copy()
     if _mkt_filter:
@@ -519,12 +532,21 @@ else:
                     col.metric("Orders",     f"{int(row['orders']):,}")
                     col.metric("Sessions",   f"{int(row['sessions']):,}" if pd.notna(row["sessions"]) else "—")
                     col.metric("Conv. Rate", f"{row['conversion_rate']:.2%}" if pd.notna(row["conversion_rate"]) else "—")
+                    if row.get("sessions_unavailable_reason"):
+                        col.caption(f"Sessions: {row['sessions_unavailable_reason']}")
 
         if not sessions_avail:
-            st.caption(
-                "ℹ️  Sessions and conversion rate require **Shopify Advanced or Plus** for API access. "
-                "Order count and AOV above are available on all plans."
-            )
+            # Show specific reason if available
+            reasons = [
+                r for r in shop["sessions_unavailable_reason"].fillna("").tolist() if r
+            ]
+            if reasons:
+                st.caption(f"ℹ️  Sessions unavailable — {reasons[0]}")
+            else:
+                st.caption(
+                    "ℹ️  Sessions and conversion rate require **Shopify Advanced or Plus** "
+                    "for API access. Order count and AOV above are available on all plans."
+                )
 
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
