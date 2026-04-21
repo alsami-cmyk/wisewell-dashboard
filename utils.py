@@ -650,6 +650,157 @@ def load_marketing_spend() -> pd.DataFrame:
     return df[["month_dt", "total_usd", "uae_usd", "ksa_usd"]].sort_values("month_dt").reset_index(drop=True)
 
 
+# ── Shopify store analytics ────────────────────────────────────────────────────
+
+_SHOPIFY_MARKETS = [
+    ("UAE", "SHOPIFY_STORE_UAE", "SHOPIFY_TOKEN_UAE"),
+    ("KSA", "SHOPIFY_STORE_KSA", "SHOPIFY_TOKEN_KSA"),
+    ("USA", "SHOPIFY_STORE_USA", "SHOPIFY_TOKEN_USA"),
+]
+
+
+def _shopify_creds() -> list[tuple[str, str, str]]:
+    """Returns [(market, store_domain, token)] for markets that have secrets configured."""
+    out = []
+    for market, store_key, token_key in _SHOPIFY_MARKETS:
+        try:
+            store = str(st.secrets[store_key]).strip().rstrip("/")
+            token = str(st.secrets[token_key]).strip()
+            if store and token:
+                out.append((market, store, token))
+        except (KeyError, FileNotFoundError):
+            pass
+    return out
+
+
+def _shopify_rest(store: str, token: str, path: str, params: dict | None = None) -> dict:
+    """Shopify Admin REST API GET with retry."""
+    url = f"https://{store}/admin/api/2024-10/{path}"
+    headers = {"X-Shopify-Access-Token": token, "Content-Type": "application/json"}
+    for attempt in range(MAX_RETRIES):
+        try:
+            r = requests.get(url, headers=headers, params=params or {}, timeout=15)
+            r.raise_for_status()
+            return r.json()
+        except Exception as exc:
+            if attempt == MAX_RETRIES - 1:
+                raise
+            time.sleep(RETRY_BACKOFF[attempt])
+    return {}
+
+
+def _shopify_graphql(store: str, token: str, query: str) -> dict:
+    """Shopify Admin GraphQL API (used for ShopifyQL analytics)."""
+    url = f"https://{store}/admin/api/2024-10/graphql.json"
+    r = requests.post(
+        url,
+        headers={"X-Shopify-Access-Token": token, "Content-Type": "application/json"},
+        json={"query": query},
+        timeout=15,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_shopify_store_analytics() -> pd.DataFrame:
+    """
+    Online store performance metrics (MTD) from all configured Shopify stores.
+
+    Always available (all plans):
+        orders (int)          — Shopify orders placed MTD
+        revenue_local (float) — gross revenue in local currency
+        aov_local (float)     — average order value in local currency
+
+    Requires Shopify Advanced / Plus (ShopifyQL):
+        sessions (int)          — store sessions MTD
+        conversion_rate (float) — sessions → orders rate
+
+    Returns: market, orders, revenue_local, aov_local, sessions, conversion_rate, configured
+    Falls back gracefully to showing only order data if credentials missing or plan too low.
+    """
+    creds = _shopify_creds()
+    if not creds:
+        return pd.DataFrame(columns=[
+            "market", "orders", "revenue_local", "aov_local",
+            "sessions", "conversion_rate", "configured",
+        ])
+
+    today       = pd.Timestamp.today()
+    m_start     = today.replace(day=1)
+    m_start_str = m_start.strftime("%Y-%m-%dT00:00:00")
+    today_str   = today.strftime("%Y-%m-%dT23:59:59")
+    since_ql    = m_start.strftime("%Y-%m-%d")
+    until_ql    = today.strftime("%Y-%m-%d")
+
+    records = []
+    for market, store, token in creds:
+        rec: dict = {
+            "market": market, "orders": 0, "revenue_local": 0.0, "aov_local": 0.0,
+            "sessions": None, "conversion_rate": None, "configured": True,
+        }
+        try:
+            # ── Orders count MTD ──────────────────────────────────────────────
+            cnt = _shopify_rest(store, token, "orders/count.json", {
+                "status": "any",
+                "created_at_min": m_start_str,
+                "created_at_max": today_str,
+            })
+            rec["orders"] = int(cnt.get("count", 0))
+
+            # ── Revenue + AOV (first 250 orders; enough for monthly view) ─────
+            ords = _shopify_rest(store, token, "orders.json", {
+                "status": "any",
+                "created_at_min": m_start_str,
+                "created_at_max": today_str,
+                "fields": "id,total_price",
+                "limit": 250,
+            })
+            order_list       = ords.get("orders", [])
+            total_rev        = sum(float(o.get("total_price", 0)) for o in order_list)
+            rec["revenue_local"] = total_rev
+            rec["aov_local"]     = total_rev / len(order_list) if order_list else 0.0
+
+            # ── Sessions + conversion via ShopifyQL (Advanced / Plus only) ────
+            try:
+                ql_query = (
+                    "{ analyticsReport(query: "
+                    '"SHOW sessions, conversion_rate FROM sessions '
+                    f"SINCE {since_ql} UNTIL {until_ql}"
+                    '") { result { headers rowData } } }'
+                )
+                gql    = _shopify_graphql(store, token, ql_query)
+                result = (
+                    gql.get("data", {})
+                    .get("analyticsReport", {})
+                    .get("result", {})
+                )
+                headers  = result.get("headers", [])
+                row_data = result.get("rowData", [])
+                if headers and row_data:
+                    h   = {v.lower(): i for i, v in enumerate(headers)}
+                    row = row_data[0]
+                    if "sessions" in h:
+                        rec["sessions"] = int(float(row[h["sessions"]]))
+                    if "conversion_rate" in h:
+                        cr = float(row[h["conversion_rate"]])
+                        # Shopify returns e.g. 3.2 (meaning 3.2%) — normalise to 0–1
+                        rec["conversion_rate"] = cr / 100 if cr > 1 else cr
+            except Exception as gql_err:
+                logger.info(
+                    "ShopifyQL sessions not available for %s (%s) — order data only.",
+                    market, gql_err,
+                )
+
+        except Exception as exc:
+            logger.warning("Shopify REST failed for %s: %s", market, exc)
+            rec["configured"] = False
+
+        records.append(rec)
+
+    return pd.DataFrame(records)
+
+
 # ── Historical loaders (pre-Sep-2025) ─────────────────────────────────────────
 
 def _parse_hist_matrix(

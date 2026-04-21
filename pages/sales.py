@@ -20,7 +20,7 @@ from utils import (
     get_all_machine_sales, get_monthly_sales_blended,
     get_active_subscriptions, get_active_ownership,
     compute_cancellation_rate, load_marketing_spend, load_recharge_full,
-    get_monthly_user_base_blended,
+    get_monthly_user_base_blended, load_shopify_store_analytics,
 )
 
 # ── Sidebar filter state ───────────────────────────────────────────────────────
@@ -440,6 +440,92 @@ if not ub_blended.empty:
         st.info("No user base data for the selected filters and date range.")
 else:
     st.info("User base data loading…")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROW 5: Online Store Performance (Shopify)
+# ═══════════════════════════════════════════════════════════════════════════════
+st.markdown("---")
+st.markdown(
+    '<p style="font-size:13px; font-weight:600; color:#e2e5f0; margin-bottom:0.5rem;">'
+    "🛒 Online Store Performance (Shopify · MTD)</p>",
+    unsafe_allow_html=True,
+)
+
+shopify_df = load_shopify_store_analytics()
+
+if shopify_df.empty:
+    st.info(
+        "**Shopify not connected yet.** "
+        "Add `SHOPIFY_STORE_UAE` / `SHOPIFY_TOKEN_UAE` (and KSA, USA equivalents) "
+        "to Streamlit Cloud secrets to enable this section."
+    )
+else:
+    # Apply country filter
+    shop = shopify_df.copy()
+    if _mkt_filter:
+        shop = shop[shop["market"] == _mkt_filter]
+
+    if shop.empty:
+        st.info("No Shopify data for the selected market.")
+    else:
+        total_orders     = int(shop["orders"].sum())
+        total_rev        = float(shop["revenue_local"].sum())
+        sessions_avail   = shop["sessions"].notna().any()
+        total_sessions   = int(shop["sessions"].fillna(0).sum()) if sessions_avail else None
+        avg_conv         = float(shop["conversion_rate"].mean()) if sessions_avail and shop["conversion_rate"].notna().any() else None
+
+        # AOV: weighted average across markets
+        aov_orders = shop[shop["orders"] > 0]
+        avg_aov_usd = 0.0
+        if not aov_orders.empty:
+            currency_map = {"UAE": "AED", "KSA": "SAR", "USA": "USD"}
+            weighted_rev = sum(
+                row["revenue_local"] * fx.get(currency_map.get(row["market"], "USD"), 1.0)
+                for _, row in aov_orders.iterrows()
+            )
+            avg_aov_usd = weighted_rev / total_orders if total_orders > 0 else 0.0
+
+        sh1, sh2, sh3, sh4 = st.columns(4)
+        sh1.metric(
+            "Sessions MTD",
+            f"{total_sessions:,}" if total_sessions is not None else "—",
+            help=(
+                "Online store visits. "
+                "Requires Shopify Advanced / Plus plan — shows '—' on lower plans."
+            ),
+        )
+        sh2.metric(
+            "Conversion Rate",
+            f"{avg_conv:.2%}" if avg_conv is not None else "—",
+            help="Sessions that resulted in an order. Requires Advanced / Plus plan.",
+        )
+        sh3.metric(
+            "Shopify Orders MTD",
+            f"{total_orders:,}",
+            help="Orders placed via Online Store (all plans)",
+        )
+        sh4.metric(
+            "Avg Order Value",
+            fmt_usd(avg_aov_usd) if avg_aov_usd > 0 else "—",
+            help="Revenue ÷ orders, converted to USD at current FX",
+        )
+
+        # Per-market breakdown when viewing Global
+        if not _mkt_filter and len(shop) > 1:
+            with st.expander("Market breakdown", expanded=False):
+                cols = st.columns(len(shop))
+                for col, (_, row) in zip(cols, shop.iterrows()):
+                    col.markdown(f"**{row['market']}**")
+                    col.metric("Orders",     f"{int(row['orders']):,}")
+                    col.metric("Sessions",   f"{int(row['sessions']):,}" if pd.notna(row["sessions"]) else "—")
+                    col.metric("Conv. Rate", f"{row['conversion_rate']:.2%}" if pd.notna(row["conversion_rate"]) else "—")
+
+        if not sessions_avail:
+            st.caption(
+                "ℹ️  Sessions and conversion rate require **Shopify Advanced or Plus** for API access. "
+                "Order count and AOV above are available on all plans."
+            )
+
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.markdown("---")
