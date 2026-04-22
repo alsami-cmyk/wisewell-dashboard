@@ -217,6 +217,10 @@ fig_sales.add_trace(
         x=list(sales_series.index),
         y=list(sales_series.values),
         marker_color="#818cf8",
+        text=[f"{int(v):,}" for v in sales_series.values],
+        textposition="outside",
+        textfont=dict(color="#e2e8f0", size=11),
+        cliponaxis=False,
         hovertemplate="%{x|%b %d, %Y}<br>Sales: %{y:,}<extra></extra>",
     )
 )
@@ -251,10 +255,14 @@ fig_base.add_trace(
     go.Scatter(
         x=list(bucket_dates),
         y=base_values,
-        mode="lines+markers",
+        mode="lines+markers+text",
         line=dict(color="#818cf8", width=2.5),
         marker=dict(color="#818cf8", size=6,
                     line=dict(color="#1e293b", width=1)),
+        text=[f"{int(v):,}" for v in base_values],
+        textposition="top center",
+        textfont=dict(color="#e2e8f0", size=11),
+        cliponaxis=False,
         hovertemplate="%{x|%b %d, %Y}<br>Users: %{y:,}<extra></extra>",
     )
 )
