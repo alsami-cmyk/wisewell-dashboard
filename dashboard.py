@@ -93,5 +93,6 @@ with st.sidebar:
 pg = st.navigation([
     st.Page("pages/sales.py",     title="Sales",     icon="📈"),
     st.Page("pages/retention.py", title="Retention",  icon="🔄"),
+    st.Page("pages/test.py",      title="Test",       icon="🧪"),
 ])
 pg.run()
