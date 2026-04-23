@@ -104,11 +104,14 @@ def _apply_filters(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _point_in_time_arr_usd(end_ts: pd.Timestamp) -> float:
-    """ARR (USD) from ACTIVE machine subscribers at end_ts.
+    """ARR (USD) from ACTIVE machine + filter subscribers at end_ts.
 
     Re-computes ARR from recurring_price × quantity × (12 / freq_months) so
     the answer is correct for any historical as-of date (the cached arr_local
-    column reflects *current* status only).
+    column reflects *current* status only and is Machine-only).
+
+    Includes both Machine and Filter category subscriptions — ownership
+    purchases are excluded (one-time revenue, not recurring).
     """
     rc = load_recharge_full()
     if rc.empty:
@@ -117,7 +120,7 @@ def _point_in_time_arr_usd(end_ts: pd.Timestamp) -> float:
     if rc_f.empty:
         return 0.0
     mask = (
-        (rc_f["category"] == "Machine")
+        rc_f["category"].isin(["Machine", "Filter"])
         & rc_f["created_at_dt"].notna()
         & (rc_f["created_at_dt"] <= end_ts)
         & (rc_f["cancelled_at_dt"].isna() | (rc_f["cancelled_at_dt"] > end_ts))
@@ -204,9 +207,9 @@ k2.metric(
     "ARR (USD)",
     fmt_usd(cur_m["arr_usd"]),
     delta=_fmt_delta(_delta_pct(cur_m["arr_usd"], prev_m["arr_usd"])),
-    help="Annualised run-rate from ACTIVE machine subs at end of window "
-         "(recurring_price × quantity × 12 / billing-interval months). "
-         "Converted to USD at current FX.",
+    help="Annualised run-rate from ACTIVE machine + filter subs at end of "
+         "window (recurring_price × quantity × 12 / billing-interval months). "
+         "Converted to USD at current FX. Ownership purchases excluded.",
 )
 k3.metric(
     "NEW GROSS SALES",

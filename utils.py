@@ -272,8 +272,21 @@ def _classify_recharge_product(title: str) -> tuple[str | None, str | None]:
     t = str(title).strip()
     tl = t.lower()
 
-    # Filter products — not machine, tracked separately if needed
+    # Filter products — tracked separately from Machine. Product associates
+    # each filter sub with its parent machine so product filtering works
+    # correctly in ARR and related metrics.
     if "filter subscription" in tl or "care+ plan" in tl or "care+" in tl:
+        if "(model 1)" in tl or "model 1" in tl:
+            return "Filter", "Model 1"
+        if "(nano+)" in tl or "nano+" in tl or "nano +" in tl:
+            return "Filter", "Nano+"
+        if "bubble" in tl:
+            return "Filter", "Bubble"
+        if "(flat)" in tl or re.search(r"\bflat\b", tl):
+            return "Filter", "Flat"
+        # Plain "Filter Subscription" with no qualifier → Model 1
+        if tl == "filter subscription":
+            return "Filter", "Model 1"
         return "Filter", None
 
     # Ownership-labeled entries in Recharge are data errors — exclude
