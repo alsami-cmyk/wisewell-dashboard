@@ -19,9 +19,11 @@ import streamlit as st
 
 from utils import (
     PRODUCT_ORDER,
+    fmt_usd,
     get_active_ownership,
     get_active_subscriptions,
     get_all_machine_sales,
+    get_fx,
     load_recharge_full,
 )
 
@@ -101,6 +103,38 @@ def _apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _point_in_time_arr_usd(end_ts: pd.Timestamp) -> float:
+    """ARR (USD) from ACTIVE machine subscribers at end_ts.
+
+    Re-computes ARR from recurring_price × quantity × (12 / freq_months) so
+    the answer is correct for any historical as-of date (the cached arr_local
+    column reflects *current* status only).
+    """
+    rc = load_recharge_full()
+    if rc.empty:
+        return 0.0
+    rc_f = _apply_filters(rc)
+    if rc_f.empty:
+        return 0.0
+    mask = (
+        (rc_f["category"] == "Machine")
+        & rc_f["created_at_dt"].notna()
+        & (rc_f["created_at_dt"] <= end_ts)
+        & (rc_f["cancelled_at_dt"].isna() | (rc_f["cancelled_at_dt"] > end_ts))
+    )
+    active = rc_f.loc[mask]
+    if active.empty:
+        return 0.0
+    freq      = active["charge_interval_frequency"].replace(0, 1).fillna(1)
+    price     = active["recurring_price"].fillna(0)
+    qty       = active["quantity"].fillna(0)
+    arr_local = price * qty * (12.0 / freq)
+    fx        = get_fx()
+    currency  = active["currency"].fillna("USD")
+    arr_usd   = arr_local * currency.map(lambda c: fx.get(c, 1.0))
+    return float(arr_usd.sum())
+
+
 def _period_metrics(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> dict:
     """Compute scorecard metrics for the given window."""
     # Total user base at end_ts  (active subs + active ownership)
@@ -108,6 +142,9 @@ def _period_metrics(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> dict:
     a_own = _apply_filters(get_active_ownership(as_of=end_ts))
     user_base = int(a_sub["qty"].sum() if not a_sub.empty else 0) \
               + int(a_own["qty"].sum() if not a_own.empty else 0)
+
+    # ARR (USD) at end_ts — active machine subs only
+    arr_usd = _point_in_time_arr_usd(end_ts)
 
     # New gross sales within [start, end]
     sales = _apply_filters(get_all_machine_sales(start_dt=start_ts, end_dt=end_ts))
@@ -130,6 +167,7 @@ def _period_metrics(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> dict:
 
     return {
         "user_base": user_base,
+        "arr_usd":   arr_usd,
         "new_sales": new_sales,
         "churned":   churned,
         "net":       new_sales - churned,
@@ -155,7 +193,7 @@ prev_m = _period_metrics(cmp_start_ts, cmp_end_ts)
 
 # ── Scorecards ────────────────────────────────────────────────────────────────
 st.markdown("---")
-k1, k2, k3, k4 = st.columns(4)
+k1, k2, k3, k4, k5 = st.columns(5)
 
 k1.metric(
     "TOTAL USER BASE",
@@ -163,18 +201,26 @@ k1.metric(
     delta=_fmt_delta(_delta_pct(cur_m["user_base"], prev_m["user_base"])),
 )
 k2.metric(
+    "ARR (USD)",
+    fmt_usd(cur_m["arr_usd"]),
+    delta=_fmt_delta(_delta_pct(cur_m["arr_usd"], prev_m["arr_usd"])),
+    help="Annualised run-rate from ACTIVE machine subs at end of window "
+         "(recurring_price × quantity × 12 / billing-interval months). "
+         "Converted to USD at current FX.",
+)
+k3.metric(
     "NEW GROSS SALES",
     f"{cur_m['new_sales']:,}",
     delta=_fmt_delta(_delta_pct(cur_m["new_sales"], prev_m["new_sales"])),
 )
-k3.metric(
+k4.metric(
     "CHURNED CUSTOMERS",
     f"{cur_m['churned']:,}",
     delta=_fmt_delta(_delta_pct(cur_m["churned"], prev_m["churned"])),
     delta_color="inverse",  # red = more churn is bad, green = less churn is good
 )
 net_prefix = "+" if cur_m["net"] >= 0 else ""
-k4.metric(
+k5.metric(
     "NET GAIN/LOSS",
     f"{net_prefix}{cur_m['net']:,}",
     delta=_fmt_delta(_delta_pct(cur_m["net"], prev_m["net"])),
