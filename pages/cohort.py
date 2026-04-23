@@ -25,25 +25,37 @@ st.caption("How many of each month's new subscriptions are still active after N 
 
 # ── Filter bar ────────────────────────────────────────────────────────────────
 today_d = date.today()
-# Default: last 12 cohort months (Apr 2025 → Mar 2026 if today is Apr 2026)
-default_end_month   = today_d.replace(day=1)
-default_start_month = (default_end_month - pd.DateOffset(months=11)).date().replace(day=1)
+
+# Build a month/year list spanning the past 36 months up to the current month.
+# User picks from a dropdown in "MMM YYYY" format — no full date picker needed.
+_today_month = pd.Timestamp(today_d).to_period("M").to_timestamp()
+_months      = pd.date_range(
+    _today_month - pd.DateOffset(months=35),
+    _today_month,
+    freq="MS",
+)
+_month_labels = [m.strftime("%b %Y") for m in _months]
+_label_to_ts  = dict(zip(_month_labels, _months))
+
+# Defaults: last 12 cohort months
+default_end_idx   = len(_month_labels) - 1
+default_start_idx = max(0, default_end_idx - 11)
 
 c1, c2, c3, c4 = st.columns([2.2, 2.2, 1.8, 1.4])
 
 with c1:
-    start_month = st.date_input(
+    start_label = st.selectbox(
         "First cohort month",
-        value=default_start_month,
-        key="co_start",
-        help="Month of first signup cohort to include.",
+        _month_labels,
+        index=default_start_idx,
+        key="co_start_month",
     )
 with c2:
-    end_month = st.date_input(
+    end_label = st.selectbox(
         "Last cohort month",
-        value=default_end_month,
-        key="co_end",
-        help="Month of last signup cohort to include.",
+        _month_labels,
+        index=default_end_idx,
+        key="co_end_month",
     )
 with c3:
     product_sel = st.selectbox(
@@ -54,9 +66,8 @@ with c4:
         "Region", ["All", "UAE", "KSA", "USA"], key="co_country",
     )
 
-# Normalise to month start
-start_month_ts = pd.Timestamp(start_month).to_period("M").to_timestamp()
-end_month_ts   = pd.Timestamp(end_month).to_period("M").to_timestamp()
+start_month_ts = _label_to_ts[start_label]
+end_month_ts   = _label_to_ts[end_label]
 if start_month_ts > end_month_ts:
     st.error("First cohort month must be on or before the last cohort month.")
     st.stop()

@@ -263,6 +263,13 @@ for i, bstart in enumerate(bucket_dates):
     count_y.append(churned)
 
 fig_rate = go.Figure()
+# Sub-monthly buckets (e.g. daily) produce tiny churn rates — use 2 decimals
+# so variation is visible. Monthly/quarterly buckets stay at 1 decimal.
+_use_two_dp = granularity == "Daily"
+_label_fmt  = "{:.2f}%" if _use_two_dp else "{:.1f}%"
+_axis_fmt   = ".2%" if _use_two_dp else ".1%"
+_hover_fmt  = ".3%" if _use_two_dp else ".2%"
+
 if mode == "Churn rate":
     fig_rate.add_trace(
         go.Scatter(
@@ -271,15 +278,15 @@ if mode == "Churn rate":
             mode="lines+markers+text",
             line=dict(color="#ef4444", width=2.5),
             marker=dict(color="#ef4444", size=7, line=dict(color="#1e293b", width=1)),
-            text=[f"{v*100:.1f}%" for v in rate_y],
+            text=[_label_fmt.format(v * 100) for v in rate_y],
             textposition="top center",
             textfont=dict(color="#e2e8f0", size=11),
             cliponaxis=False,
-            hovertemplate="%{x|%b %d, %Y}<br>Rate: %{y:.2%}<extra></extra>",
+            hovertemplate="%{x|%b %d, %Y}<br>Rate: %{y:" + _hover_fmt + "}<extra></extra>",
         )
     )
     title = f"<b>CHURN RATE OVER TIME · {granularity.upper()}</b>"
-    y_fmt = ".1%"
+    y_fmt = _axis_fmt
 else:
     fig_rate.add_trace(
         go.Bar(
