@@ -273,6 +273,61 @@ fig_sales.add_trace(
         hovertemplate="%{x|%b %d, %Y}<br>Sales: %{y:,}<extra></extra>",
     )
 )
+
+# Expose per-source breakdown so we can see where sales are coming from
+with st.expander("🔍 Sales source breakdown (debug)", expanded=False):
+    from utils import (
+        load_offline_ownership,
+        load_offline_subscriptions,
+        load_recharge_full as _dbg_rc,
+        load_shopify_ownership,
+    )
+
+    def _window(df, dcol):
+        if df is None or df.empty or dcol not in df.columns:
+            return df.iloc[0:0] if df is not None else pd.DataFrame()
+        return df[(df[dcol] >= p_start_ts) & (df[dcol] <= p_end_ts)]
+
+    # Recharge machine subs (after DELETED drop, after classification)
+    _rc = _dbg_rc()
+    _rc_m = _rc[_rc["category"] == "Machine"] if not _rc.empty else _rc
+    _rc_m = _window(_rc_m, "created_at_dt")
+    _rc_m = _apply_filters(_rc_m)
+
+    # Offline + Shopify sources
+    _off_sub = _window(load_offline_subscriptions(), "date")
+    _off_own = _window(load_offline_ownership(),    "date")
+    _shop    = _window(load_shopify_ownership(),    "date")
+    for _src in (_off_sub, _off_own, _shop):
+        if _src is not None and not _src.empty and "market" in _src.columns:
+            if mkt_filter:
+                _src.drop(_src[_src["market"] != mkt_filter].index, inplace=True)
+            if prod_filter and "product" in _src.columns:
+                _src.drop(_src[_src["product"] != prod_filter].index, inplace=True)
+
+    _breakdown = pd.DataFrame([
+        ["Recharge (Machine subs, DELETED already filtered)",
+         int(_rc_m["quantity"].sum()) if not _rc_m.empty else 0],
+        ["Offline - Subscriptions",
+         int(_off_sub["qty"].sum()) if _off_sub is not None and not _off_sub.empty else 0],
+        ["Shopify ownership (from Shopify-UAE/KSA/USA tabs)",
+         int(_shop["qty"].sum()) if _shop is not None and not _shop.empty else 0],
+        ["Offline - Ownership",
+         int(_off_own["qty"].sum()) if _off_own is not None and not _off_own.empty else 0],
+    ], columns=["Source", "Qty in window"])
+    _breakdown.loc[len(_breakdown)] = ["TOTAL", int(_breakdown["Qty in window"].sum())]
+    st.dataframe(_breakdown, use_container_width=True, hide_index=True)
+
+    # Also show the individual Recharge rows in the window so you can audit
+    if _rc_m is not None and not _rc_m.empty:
+        st.caption("Recharge rows in window (Machine only, post DELETED-filter):")
+        st.dataframe(
+            _rc_m[[
+                "subscription_id", "customer_email", "status", "market",
+                "product", "quantity", "created_at_dt", "cancelled_at_dt",
+            ]].sort_values("created_at_dt"),
+            use_container_width=True, hide_index=True,
+        )
 fig_sales.update_layout(
     title=dict(
         text=f"<b>GROSS SALES OVER TIME · {granularity.upper()}</b>",
