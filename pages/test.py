@@ -332,6 +332,56 @@ fig_base.update_layout(
 )
 st.plotly_chart(fig_base, use_container_width=True)
 
+# ── Chart 3: ARR over time (line) ─────────────────────────────────────────────
+arr_values = [_point_in_time_arr_usd(ts) for ts in bucket_dates]
+
+
+def _fmt_usd_compact(v: float) -> str:
+    if v >= 1_000_000:
+        return f"${v/1_000_000:.2f}M"
+    if v >= 1_000:
+        return f"${v/1_000:.1f}K"
+    return f"${v:,.0f}"
+
+
+fig_arr = go.Figure()
+fig_arr.add_trace(
+    go.Scatter(
+        x=list(bucket_dates),
+        y=arr_values,
+        mode="lines+markers+text",
+        line=dict(color="#10b981", width=2.5),
+        marker=dict(color="#10b981", size=6,
+                    line=dict(color="#1e293b", width=1)),
+        text=[_fmt_usd_compact(v) for v in arr_values],
+        textposition="top center",
+        textfont=dict(color="#e2e8f0", size=11),
+        cliponaxis=False,
+        hovertemplate="%{x|%b %d, %Y}<br>ARR: $%{y:,.0f}<extra></extra>",
+    )
+)
+fig_arr.update_layout(
+    title=dict(
+        text=f"<b>ARR OVER TIME · {granularity.upper()}</b>",
+        font=dict(size=12, color="#94a3b8"),
+        x=0.01, xanchor="left",
+    ),
+    plot_bgcolor="rgba(0,0,0,0)",
+    paper_bgcolor="rgba(0,0,0,0)",
+    font=dict(color="#e2e8f0", size=11),
+    height=320,
+    margin=dict(l=10, r=10, t=45, b=30),
+    xaxis=dict(showgrid=False),
+    yaxis=dict(
+        gridcolor="rgba(148,163,184,0.15)",
+        zeroline=False,
+        tickprefix="$",
+        tickformat=",.0f",
+    ),
+    showlegend=False,
+)
+st.plotly_chart(fig_arr, use_container_width=True)
+
 # ── Footnote ──────────────────────────────────────────────────────────────────
 st.caption(
     f"Window: **{p_start.strftime('%b %d, %Y')} – {p_end.strftime('%b %d, %Y')}** "
