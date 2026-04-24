@@ -303,7 +303,10 @@ def _classify_recharge_product(title: str) -> tuple[str | None, str | None]:
         return "Machine", "Bubble"
     if re.search(r"wisewell\s*flat\s*subscription", tl) and "filter" not in tl:
         return "Machine", "Flat"
-    if tl == "wisewell nano subscription":
+    # Nano Tank:
+    #   UAE uses "Wisewell Nano Subscription", USA uses "Wisewell Nano" (no suffix).
+    #   Both are subscription products and map to Nano Tank.
+    if tl in ("wisewell nano subscription", "wisewell nano"):
         return "Machine", "Nano Tank"
 
     return None, None
@@ -509,10 +512,12 @@ def load_shopify_ownership() -> pd.DataFrame:
     raw_data, _errors, _elapsed = _fetch_all_tabs()
     records = []
 
+    # USA intentionally excluded: all USA machine revenue (traditional subs,
+    # rent-to-own, downpayment + subscription) is processed via Recharge and
+    # already counted as subscriptions. Shopify - USA would double-count it.
     for tab_name, market in [
         ("Shopify - UAE", "UAE"),
         ("Shopify - KSA", "KSA"),
-        ("Shopify - USA", "USA"),
     ]:
         rows = raw_data.get(tab_name, [])
         if len(rows) < 2:
