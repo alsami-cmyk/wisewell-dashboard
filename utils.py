@@ -417,9 +417,18 @@ def load_recharge_full() -> pd.DataFrame:
 
     df = pd.concat(frames, ignore_index=True)
 
-    # Drop DELETED subscriptions
+    # Drop DELETED subscriptions — robust to case / whitespace.
+    # Any status normalising to "DELETED" (e.g. "deleted", "DELETED ",
+    # " Deleted") is excluded. NaN statuses are kept (not DELETED).
     if "status" in df.columns:
-        df = df[df["status"].str.upper() != "DELETED"].copy()
+        _status_norm = (
+            df["status"].fillna("").astype(str).str.strip().str.upper()
+        )
+        _before = len(df)
+        df = df[_status_norm != "DELETED"].copy()
+        _dropped = _before - len(df)
+        if _dropped:
+            logger.info("load_recharge_full: dropped %d DELETED subscription rows", _dropped)
 
     # Numeric fields
     for col, default in [
