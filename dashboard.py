@@ -91,10 +91,11 @@ with st.sidebar:
 
 # ── Page router ───────────────────────────────────────────────────────────────
 pg = st.navigation([
-    st.Page("pages/sales.py",     title="Sales",            icon="📈"),
-    st.Page("pages/retention.py", title="Retention",        icon="🔄"),
-    st.Page("pages/test.py",      title="Test",             icon="🧪"),
-    st.Page("pages/test2.py",     title="Test 2",           icon="🧪"),
-    st.Page("pages/cohort.py",    title="Cohort Analysis",  icon="📊"),
+    st.Page("pages/executive_summary.py", title="Executive Summary", icon="🎯"),
+    st.Page("pages/sales.py",             title="Sales",             icon="📈"),
+    st.Page("pages/retention.py",         title="Retention",         icon="🔄"),
+    st.Page("pages/test.py",              title="Test",              icon="🧪"),
+    st.Page("pages/test2.py",             title="Test 2",            icon="🧪"),
+    st.Page("pages/cohort.py",            title="Cohort Analysis",   icon="📊"),
 ])
 pg.run()
