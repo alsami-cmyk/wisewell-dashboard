@@ -177,7 +177,7 @@ cur_cac  = (cur_spend / cur_new)   if cur_new  > 0 else 0.0
 prev_cac = (prev_spend / prev_new) if prev_new > 0 else 0.0
 
 st.markdown("---")
-k1, k2, k3, k4, k5 = st.columns(5)
+k1, k2, k3, k4 = st.columns(4)
 
 k1.metric(
     "ARR (USD)",
@@ -192,33 +192,84 @@ k2.metric(
     help="Active machine subs + active ownership, as of today vs. prior month end.",
 )
 k3.metric(
-    "NET NEW CUSTOMERS · MTD",
-    f"{'+' if cur_net >= 0 else ''}{cur_net:,}",
-    delta=_fmt_delta(_delta_pct(cur_net, prev_net)),
-    help="New machine sales MTD minus true cancellations MTD.",
-)
-k4.metric(
     "MONTHLY CHURN RATE",
     f"{cur_churn_rate:.2%}",
     delta=_fmt_delta(_delta_pct(cur_churn_rate, prev_churn_rate)),
     delta_color="inverse",
     help="True cancels MTD ÷ active subs at start of month.",
 )
-k5.metric(
+k4.metric(
     "CAC · MTD",
     fmt_usd(cur_cac) if cur_cac > 0 else "—",
     delta=_fmt_delta(_delta_pct(cur_cac, prev_cac)),
     delta_color="inverse",
     help=(
         "Blended CAC = marketing spend ÷ new machine sales over the month. "
-        "USA marketing spend not yet tracked — CAC shown only when a market "
-        "with spend data is selected or for UAE+KSA in 'All'."
+        "USA marketing spend not yet tracked — CAC shown as '—' for that market."
     ),
 )
 
+# ── MTD sales vs. target meter ────────────────────────────────────────────────
+_TARGETS = {"UAE": 780, "USA": 50, "KSA": 0, "All": 780 + 50}  # KSA target TBC
+_target = _TARGETS.get(country_sel, 0)
+
+if _target > 0:
+    _pct = cur_new / _target * 100 if _target else 0
+    _bar_color = "#10b981" if _pct >= 100 else "#818cf8"
+    fig_meter = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=cur_new,
+            number=dict(
+                suffix=f" / {_target:,}",
+                font=dict(size=26, color="#e2e8f0"),
+            ),
+            title=dict(
+                text=(
+                    f"<b>MTD SALES VS. TARGET · {country_sel.upper()}</b>"
+                    f"<br><span style='font-size:12px;color:#94a3b8'>"
+                    f"{_pct:.0f}% of {_target:,} target</span>"
+                ),
+                font=dict(size=13, color="#cbd5e1"),
+            ),
+            gauge=dict(
+                axis=dict(
+                    range=[0, max(_target * 1.1, cur_new * 1.05)],
+                    tickcolor="#475569",
+                    tickfont=dict(color="#94a3b8", size=10),
+                ),
+                bar=dict(color=_bar_color, thickness=0.7),
+                bgcolor="rgba(30,41,59,0.6)",
+                borderwidth=0,
+                steps=[
+                    dict(range=[0, _target * 0.5], color="rgba(239,68,68,0.20)"),
+                    dict(range=[_target * 0.5, _target * 0.8], color="rgba(245,158,11,0.20)"),
+                    dict(range=[_target * 0.8, _target], color="rgba(16,185,129,0.20)"),
+                ],
+                threshold=dict(
+                    line=dict(color="#e2e8f0", width=3),
+                    thickness=0.85,
+                    value=_target,
+                ),
+            ),
+        )
+    )
+    fig_meter.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        height=230,
+        margin=dict(l=30, r=30, t=70, b=10),
+    )
+    st.plotly_chart(fig_meter, use_container_width=True)
+else:
+    st.caption(
+        f"ℹ️ No MTD sales target set for **{country_sel}**. "
+        f"Current MTD sales: **{cur_new:,}**."
+    )
+
 # ── Row 2: ARR + User Base over time (monthly) ────────────────────────────────
 st.markdown("---")
-st.markdown("### Growth: ARR and User Base")
+st.markdown("### Growth: ARR and Monthly Sales")
 
 # Month-range pickers. Default start = Jan 2025, end = current month.
 _today_month = pd.Timestamp(today_d).to_period("M").to_timestamp()
@@ -258,9 +309,14 @@ for ms in month_starts:
     mend = (ms + pd.offsets.MonthEnd(0))
     measure_points.append(min(mend, pd.Timestamp(today_d)))
 
-arr_series  = [_arr_usd_at(pd.Timestamp(ts))     for ts in measure_points]
-base_series = [_active_users_at(pd.Timestamp(ts)) for ts in measure_points]
-x_labels    = [ts.strftime("%b %Y") for ts in measure_points]
+arr_series   = [_arr_usd_at(pd.Timestamp(ts)) for ts in measure_points]
+x_labels     = [ts.strftime("%b %Y") for ts in measure_points]
+
+# Monthly sales: new machine sales for each month in the range.
+# The final month may be partial (clamped to today).
+sales_series = []
+for ms, mp in zip(month_starts, measure_points):
+    sales_series.append(_new_sales_in(pd.Timestamp(ms), pd.Timestamp(mp)))
 
 
 def _fmt_usd_compact(v: float) -> str:
@@ -275,16 +331,16 @@ fig_growth = go.Figure()
 fig_growth.add_trace(
     go.Bar(
         x=x_labels,
-        y=base_series,
-        name="User base",
+        y=sales_series,
+        name="Monthly sales",
         marker_color="#818cf8",
-        opacity=0.55,
+        opacity=0.75,
         yaxis="y2",
-        text=[f"{v:,}" for v in base_series],
+        text=[f"{v:,}" for v in sales_series],
         textposition="outside",
         textfont=dict(color="#cbd5e1", size=10),
         cliponaxis=False,
-        hovertemplate="%{x}<br>Users: %{y:,}<extra></extra>",
+        hovertemplate="%{x}<br>Sales: %{y:,}<extra></extra>",
     )
 )
 fig_growth.add_trace(
@@ -315,7 +371,7 @@ fig_growth.update_layout(
         tickprefix="$", tickformat=",.0f",
     ),
     yaxis2=dict(
-        title=dict(text="User base", font=dict(color="#818cf8")),
+        title=dict(text="Monthly sales", font=dict(color="#818cf8")),
         overlaying="y", side="right",
         showgrid=False, zeroline=False,
     ),
