@@ -125,8 +125,7 @@ def _marketing_spend_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> float:
     if mkt_filter == "KSA":
         return float(in_window["ksa_usd"].fillna(0).sum())
     if mkt_filter == "USA":
-        # No USA column in the spreadsheet today.
-        return 0.0
+        return float(in_window["usa_usd"].fillna(0).sum())
     return float(in_window["total_usd"].fillna(0).sum())
 
 
@@ -205,7 +204,7 @@ k4.metric(
     delta_color="inverse",
     help=(
         "Blended CAC = marketing spend ÷ new machine sales over the month. "
-        "USA marketing spend not yet tracked — CAC shown as '—' for that market."
+        "Per-market spend pulled from Marketing Spend tab (UAE / KSA / USA columns)."
     ),
 )
 

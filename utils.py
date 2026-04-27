@@ -644,12 +644,12 @@ def load_offline_returns() -> pd.DataFrame:
 def load_marketing_spend() -> pd.DataFrame:
     """
     Marketing Spend tab → monthly spend in USD.
-    Returns: month_dt, total_usd, uae_usd, ksa_usd
+    Returns: month_dt, total_usd, uae_usd, ksa_usd, usa_usd
     """
     raw_data, _errors, _elapsed = _fetch_all_tabs()
     rows = raw_data.get("Marketing Spend", [])
     df   = _rows_to_df(rows)
-    empty = pd.DataFrame(columns=["month_dt", "total_usd", "uae_usd", "ksa_usd"])
+    empty = pd.DataFrame(columns=["month_dt", "total_usd", "uae_usd", "ksa_usd", "usa_usd"])
     if df.empty:
         return empty
 
@@ -673,8 +673,9 @@ def load_marketing_spend() -> pd.DataFrame:
     df["total_usd"] = _spend("Total Spend")
     df["uae_usd"]   = _spend("UAE")
     df["ksa_usd"]   = _spend("KSA")
+    df["usa_usd"]   = _spend("USA")
 
-    return df[["month_dt", "total_usd", "uae_usd", "ksa_usd"]].sort_values("month_dt").reset_index(drop=True)
+    return df[["month_dt", "total_usd", "uae_usd", "ksa_usd", "usa_usd"]].sort_values("month_dt").reset_index(drop=True)
 
 
 # ── Shopify store analytics ────────────────────────────────────────────────────
