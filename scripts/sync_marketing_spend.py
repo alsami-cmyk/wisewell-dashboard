@@ -36,9 +36,9 @@ Local invocation (for testing)
 ────────────────────────────────────────────────────────────────────────────
 
   export META_ACCESS_TOKEN="EAAB..."
-  export META_AD_ACCOUNT_UAE="act_109540525272698"
-  export META_AD_ACCOUNT_KSA="act_208868938987507"
-  export META_AD_ACCOUNT_USA="act_112213634646165"
+  export META_AD_ACCOUNT_UAE="act_3734539713438684"
+  export META_AD_ACCOUNT_KSA="act_283714881224687"
+  export META_AD_ACCOUNT_USA="act_944214021797739"
   export GOOGLE_SERVICE_ACCOUNT="$(cat ~/.config/wisewell-sa.json)"
   python scripts/sync_marketing_spend.py
 """

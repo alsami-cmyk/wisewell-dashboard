@@ -22,9 +22,9 @@ reads them as environment variables when executing the script.
 | Secret name | What it is | Where to get it |
 |---|---|---|
 | `META_ACCESS_TOKEN` | Long-lived System User token | Meta Business Settings → Users → System Users → Dashboard → Generate new token (Never expires) |
-| `META_AD_ACCOUNT_UAE` | `act_109540525272698` | Meta Business Settings → Ad Accounts |
-| `META_AD_ACCOUNT_KSA` | `act_208868938987507` | same |
-| `META_AD_ACCOUNT_USA` | `act_112213634646165` | same |
+| `META_AD_ACCOUNT_UAE` | `act_3734539713438684` | Meta Business Settings → Ad Accounts |
+| `META_AD_ACCOUNT_KSA` | `act_283714881224687` | same |
+| `META_AD_ACCOUNT_USA` | `act_944214021797739` | same |
 | `GOOGLE_SERVICE_ACCOUNT` | Full service-account JSON, as a single string | Streamlit Cloud Secrets → copy the value of `GOOGLE_SERVICE_ACCOUNT` |
 
 ---
