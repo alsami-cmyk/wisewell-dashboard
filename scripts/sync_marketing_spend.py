@@ -181,6 +181,15 @@ def get_monthly_spend(account_id: str, token: str) -> dict[str, float]:
 # ─────────────────────────────────────────────────────────────────────────────
 # Sheets writer
 # ─────────────────────────────────────────────────────────────────────────────
+def _get_sheet_id_by_title(svc, spreadsheet_id: str, title: str) -> int:
+    meta = svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    for s in meta.get("sheets", []):
+        props = s.get("properties", {})
+        if props.get("title") == title:
+            return int(props["sheetId"])
+    raise RuntimeError(f"Tab not found: {title!r}")
+
+
 def write_sheet(
     sa_json: str,
     sheet_id: str,
@@ -189,26 +198,46 @@ def write_sheet(
 ) -> None:
     """
     Replace the data area of `tab_name` with HEADER + rows.
-    Keeps the tab itself; never touches other tabs.
+    Also strips inherited cell formatting on the data area so that values
+    like "Oct-23" don't get auto-displayed as "October-23" or "$0.00" via
+    legacy date / currency formats from the duplicated tab.
     """
     creds_info = json.loads(sa_json)
     creds = service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
     svc   = build("sheets", "v4", credentials=creds, cache_discovery=False)
 
-    range_clear = f"'{tab_name}'!A2:M"
-    svc.spreadsheets().values().clear(
-        spreadsheetId=sheet_id, range=range_clear,
+    # 1. Clear any cell formatting on rows 2..end (preserve header formatting).
+    inner_id = _get_sheet_id_by_title(svc, sheet_id, tab_name)
+    svc.spreadsheets().batchUpdate(
+        spreadsheetId=sheet_id,
+        body={
+            "requests": [
+                {
+                    "updateCells": {
+                        "range": {
+                            "sheetId":          inner_id,
+                            "startRowIndex":    1,    # row 2 (0-indexed = 1)
+                            "startColumnIndex": 0,
+                            "endColumnIndex":   13,   # cols A..M
+                        },
+                        "fields": "userEnteredFormat",  # clear all formatting
+                    }
+                }
+            ]
+        },
     ).execute()
 
+    # 2. Clear values from row 2 down.
+    svc.spreadsheets().values().clear(
+        spreadsheetId=sheet_id, range=f"'{tab_name}'!A2:M",
+    ).execute()
+
+    # 3. Write fresh data. RAW so month labels like "Mar-23" aren't parsed
+    #    as dates ("March 23 of current year") and silently remapped.
     body = {"values": [HEADER] + rows}
     svc.spreadsheets().values().update(
         spreadsheetId=sheet_id,
         range=f"'{tab_name}'!A1",
-        # RAW (not USER_ENTERED): Sheets must NOT parse month labels like
-        # "Mar-23" as dates — it would silently coerce them to "Mar 23 of
-        # current year", remapping every historical month to a 2026 date.
-        # Numeric strings ("1,234.56") are read back fine by the dashboard,
-        # which has its own comma-stripping numeric coercion.
         valueInputOption="RAW",
         body=body,
     ).execute()
