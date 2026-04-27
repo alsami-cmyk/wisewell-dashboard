@@ -204,7 +204,12 @@ def write_sheet(
     svc.spreadsheets().values().update(
         spreadsheetId=sheet_id,
         range=f"'{tab_name}'!A1",
-        valueInputOption="USER_ENTERED",
+        # RAW (not USER_ENTERED): Sheets must NOT parse month labels like
+        # "Mar-23" as dates — it would silently coerce them to "Mar 23 of
+        # current year", remapping every historical month to a 2026 date.
+        # Numeric strings ("1,234.56") are read back fine by the dashboard,
+        # which has its own comma-stripping numeric coercion.
+        valueInputOption="RAW",
         body=body,
     ).execute()
 

@@ -210,7 +210,7 @@ def write_sheet(sa_json: str, sheet_id: str, tab_name: str, rows: list[list[str]
     svc.spreadsheets().values().update(
         spreadsheetId=sheet_id,
         range=f"'{tab_name}'!A1",
-        valueInputOption="USER_ENTERED",
+        valueInputOption="RAW",
         body=body,
     ).execute()
 
