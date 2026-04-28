@@ -44,26 +44,17 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Sidebar (branding + force-refresh only — page-level filters live in pages)
+# ── Branding ──────────────────────────────────────────────────────────────────
+# st.logo() places the image at the top of the sidebar — above the page
+# navigation list (Executive Summary / Sales / Retention / Cohort Analysis).
 import os
-_LOGO_PATH = os.path.join(os.path.dirname(__file__), "assets", "wisewell_logo.png")
+_LOGO_PATH = os.path.join(os.path.dirname(__file__), "assets", "wisewell_logo_horizontal.png")
+if os.path.exists(_LOGO_PATH):
+    st.logo(_LOGO_PATH, size="large")
 
+# ── Sidebar (force-refresh only — page-level filters live in each page) ───────
 with st.sidebar:
-    if os.path.exists(_LOGO_PATH):
-        st.image(_LOGO_PATH, use_container_width=True)
-    else:
-        # Fallback if the logo file is missing for any reason.
-        st.markdown(
-            """
-            <div style="padding: 0.5rem 0 1rem 0;">
-              <span style="font-size:1.6rem; font-weight:800; color:#e2e8f0;
-                           letter-spacing:0.05em;">💧 WISEWELL</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
     st.markdown("---")
-
     if st.button("↻ Force refresh", use_container_width=True, key="s_btn"):
         st.cache_data.clear()
         st.rerun()
