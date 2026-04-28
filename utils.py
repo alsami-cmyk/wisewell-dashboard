@@ -1091,27 +1091,53 @@ def get_active_subscriptions(
 ) -> pd.DataFrame:
     """
     Active machine subscribers at a given point in time.
-    Computable for any date since Recharge holds full history.
+
+    Sources combined:
+      - Recharge: created_at <= as_of AND (cancelled_at is null OR > as_of)
+      - Offline - Subscriptions: all rows with date <= as_of are treated
+        as still-active. Offline subs have no cancellation tracking, so
+        until a separate "Offline cancellations" feed exists, they stay
+        in the active count once recorded.
 
     Returns: market, product, qty (int)
     One row per (market, product). Use .sum() for totals.
     """
     as_of = (as_of or pd.Timestamp.today()).normalize()
-    rc    = load_recharge_full()
 
-    mask = (
-        (rc["category"] == "Machine") &
-        (rc["created_at_dt"].notna()) &
-        (rc["created_at_dt"] <= as_of) &
-        (rc["cancelled_at_dt"].isna() | (rc["cancelled_at_dt"] > as_of))
+    # ── Recharge: explicit lifecycle ─────────────────────────────────────────
+    rc = load_recharge_full()
+    rc_grouped = pd.DataFrame(columns=["market", "product", "qty"])
+    if not rc.empty:
+        mask = (
+            (rc["category"] == "Machine") &
+            (rc["created_at_dt"].notna()) &
+            (rc["created_at_dt"] <= as_of) &
+            (rc["cancelled_at_dt"].isna() | (rc["cancelled_at_dt"] > as_of))
+        )
+        rc_grouped = (
+            rc[mask]
+            .groupby(["market", "product"], as_index=False)["quantity"]
+            .sum()
+            .rename(columns={"quantity": "qty"})
+        )
+
+    # ── Offline subscriptions: cumulative count up to as_of ──────────────────
+    off_sub = load_offline_subscriptions()
+    off_grouped = pd.DataFrame(columns=["market", "product", "qty"])
+    if not off_sub.empty:
+        in_window = off_sub[off_sub["date"] <= as_of]
+        if not in_window.empty:
+            off_grouped = in_window.groupby(
+                ["market", "product"], as_index=False
+            )["qty"].sum()
+
+    # ── Combine and return one row per (market, product) ─────────────────────
+    combined = pd.concat([rc_grouped, off_grouped], ignore_index=True)
+    if combined.empty:
+        return pd.DataFrame(columns=["market", "product", "qty"])
+    return (
+        combined.groupby(["market", "product"], as_index=False)["qty"].sum()
     )
-    grouped = (
-        rc[mask]
-        .groupby(["market", "product"], as_index=False)["quantity"]
-        .sum()
-        .rename(columns={"quantity": "qty"})
-    )
-    return grouped
 
 
 @st.cache_data(ttl=300, show_spinner=False)
