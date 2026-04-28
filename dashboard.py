@@ -51,6 +51,38 @@ st.markdown("""
     max-height: 36px !important;
     width: auto !important;
 }
+
+/* ── Compact font sizes for the WiseClaude chat in the sidebar ──────────── */
+section[data-testid="stSidebar"] h4 {
+    font-size: 0.92rem !important;
+    margin-bottom: 0.25rem !important;
+}
+section[data-testid="stSidebar"] [data-testid="stChatMessage"] p,
+section[data-testid="stSidebar"] [data-testid="stChatMessage"] li,
+section[data-testid="stSidebar"] [data-testid="stChatMessage"] td,
+section[data-testid="stSidebar"] [data-testid="stChatMessage"] th {
+    font-size: 0.72rem !important;
+    line-height: 1.35 !important;
+}
+section[data-testid="stSidebar"] [data-testid="stChatMessage"] {
+    padding: 0.35rem 0.5rem !important;
+}
+section[data-testid="stSidebar"] [data-testid="stChatMessage"] strong {
+    font-size: 0.72rem !important;
+}
+section[data-testid="stSidebar"] [data-testid="stChatInput"] textarea {
+    font-size: 0.78rem !important;
+}
+section[data-testid="stSidebar"] button p {
+    font-size: 0.74rem !important;
+    line-height: 1.25 !important;
+}
+section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+    font-size: 0.68rem !important;
+}
+section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
+    font-size: 0.68rem !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -73,15 +105,13 @@ st.session_state.setdefault("_chat_messages", [])
 st.session_state.setdefault("_chat_cost_usd", 0.0)
 
 SUGGESTED_PROMPTS = [
-    "How are sales tracking vs this month's target?",
-    "What are some worrying trends I should know about?",
-    "Are newer cohorts retaining better than older ones?",
-    "How does our trailing 7-day CAC compare to last week?",
+    "What were our Nano+ sales over the last 10 days?",
+    "What are some worrying churn observations this week?",
 ]
 
 with st.sidebar:
     st.markdown("---")
-    st.markdown("#### 💬 Ask Claude")
+    st.markdown("#### 💬 Ask WiseClaude")
 
     msgs    = st.session_state["_chat_messages"]
     used    = float(st.session_state["_chat_cost_usd"])
