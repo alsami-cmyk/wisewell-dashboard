@@ -18,6 +18,7 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 from utils import (
@@ -504,24 +505,15 @@ for i, (ms, mp) in enumerate(zip(month_starts, measure_points)):
 
 churn_pct_series = [v * 100 if v is not None else None for v in churn_rate_series]
 
-_cac_max   = max((v for v in cac_series       if v is not None), default=1)
-_churn_max = max((v for v in churn_pct_series  if v is not None), default=1)
-
-fig_eff = go.Figure()
-fig_eff.add_trace(
-    go.Bar(
-        x=x_labels,
-        y=cac_series,
-        name="CAC (USD)",
-        marker_color="#f59e0b",
-        opacity=0.75,
-        text=[f"${v:,.0f}" if v is not None else "" for v in cac_series],
-        textposition="outside",
-        textfont=dict(color="#fde68a", size=10),
-        cliponaxis=False,
-        hovertemplate="%{x}<br>CAC: $%{y:,.0f}<extra></extra>",
-    )
+# Two-panel subplot: churn line on top, CAC bars on bottom — guaranteed no overlap
+fig_eff = make_subplots(
+    rows=2, cols=1,
+    shared_xaxes=True,
+    row_heights=[0.42, 0.58],
+    vertical_spacing=0.10,
+    subplot_titles=["Churn Rate (%)", "CAC (USD)"],
 )
+
 fig_eff.add_trace(
     go.Scatter(
         x=x_labels,
@@ -534,36 +526,46 @@ fig_eff.add_trace(
         textposition="top center",
         textfont=dict(color="#fca5a5", size=10),
         cliponaxis=False,
-        yaxis="y2",
         hovertemplate="%{x}<br>Churn rate: %{y:.2f}%<extra></extra>",
         connectgaps=True,
-    )
+    ),
+    row=1, col=1,
+)
+fig_eff.add_trace(
+    go.Bar(
+        x=x_labels,
+        y=cac_series,
+        name="CAC (USD)",
+        marker_color="#f59e0b",
+        opacity=0.8,
+        text=[f"${v:,.0f}" if v is not None else "" for v in cac_series],
+        textposition="outside",
+        textfont=dict(color="#fde68a", size=10),
+        cliponaxis=False,
+        hovertemplate="%{x}<br>CAC: $%{y:,.0f}<extra></extra>",
+    ),
+    row=2, col=1,
 )
 fig_eff.update_layout(
     plot_bgcolor="rgba(0,0,0,0)",
     paper_bgcolor="rgba(0,0,0,0)",
     font=dict(color="#e2e8f0", size=11),
-    height=420,
-    margin=dict(l=10, r=10, t=30, b=30),
-    xaxis=dict(showgrid=False),
-    # y1 range stretched to 2.5× max so bars sit in the bottom ~40%
-    yaxis=dict(
-        title=dict(text="CAC (USD)", font=dict(color="#f59e0b")),
-        gridcolor="rgba(148,163,184,0.15)", zeroline=False,
-        tickprefix="$", tickformat=",.0f",
-        range=[0, _cac_max * 2.5],
-    ),
-    # y2 range normal (1.3×) so churn line floats in the upper portion
-    yaxis2=dict(
-        title=dict(text="Churn Rate (%)", font=dict(color="#f87171")),
-        overlaying="y", side="right",
-        showgrid=False, zeroline=False,
-        ticksuffix="%", tickformat=".1f",
-        range=[0, _churn_max * 1.3],
-    ),
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    barmode="overlay",
+    height=480,
+    margin=dict(l=10, r=10, t=40, b=30),
+    showlegend=False,
 )
+fig_eff.update_xaxes(showgrid=False)
+fig_eff.update_yaxes(
+    gridcolor="rgba(148,163,184,0.15)", zeroline=False,
+    ticksuffix="%", tickformat=".1f", row=1, col=1,
+)
+fig_eff.update_yaxes(
+    gridcolor="rgba(148,163,184,0.15)", zeroline=False,
+    tickprefix="$", tickformat=",.0f", row=2, col=1,
+)
+for ann in fig_eff.layout.annotations:
+    ann.font.color = "#94a3b8"
+    ann.font.size  = 12
 st.plotly_chart(fig_eff, use_container_width=True)
 
 
