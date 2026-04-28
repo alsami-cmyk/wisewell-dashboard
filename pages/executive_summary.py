@@ -268,39 +268,6 @@ k5.metric(
     ),
 )
 
-# ── Row 2: Trailing 7-day KPIs ────────────────────────────────────────────────
-t1, t2, t3, t4 = st.columns(4)
-
-t1.metric(
-    "TRAILING 7D SALES",
-    f"{t7_sales:,}",
-    delta=_fmt_delta(_delta_pct(t7_sales, t7_prev_sales)),
-    help=f"New machine sales {t7_start.strftime('%b %d')} – {t7_end.strftime('%b %d')} "
-         f"vs. {t7_prev_start.strftime('%b %d')} – {t7_prev_end.strftime('%b %d')}.",
-)
-t2.metric(
-    "TRAILING 7D CANCELLATIONS",
-    f"{t7_churn:,}",
-    delta=_fmt_delta(_delta_pct(t7_churn, t7_prev_churn)),
-    delta_color="inverse",
-    help=f"True machine cancels {t7_start.strftime('%b %d')} – {t7_end.strftime('%b %d')} "
-         f"vs. previous 7-day window.",
-)
-t3.metric(
-    "TRAILING 7D NET USERS",
-    f"{'+' if t7_net >= 0 else ''}{t7_net:,}",
-    delta=_fmt_delta(_delta_pct(t7_net, t7_prev_net)),
-    help="Trailing 7d sales − trailing 7d cancellations, vs. previous 7-day window.",
-)
-t4.metric(
-    "TRAILING 7D CAC",
-    fmt_usd(t7_cac) if t7_cac > 0 else "—",
-    delta=_fmt_delta(_delta_pct(t7_cac, t7_prev_cac)),
-    delta_color="inverse",
-    help="Marketing spend (day-prorated) ÷ new machine sales over the trailing 7 days. "
-         "Spend prorates each month's total by day count.",
-)
-
 # ── MTD sales vs. target meter ────────────────────────────────────────────────
 _TARGETS = {"UAE": 780, "USA": 50, "KSA": 0, "All": 780 + 50}  # KSA target TBC
 _target = _TARGETS.get(country_sel, 0)
@@ -359,7 +326,43 @@ else:
         f"Current MTD sales: **{cur_new:,}**."
     )
 
-# ── Row 2: ARR + User Base over time (monthly) ────────────────────────────────
+# ── Trailing 7-Day Analysis ───────────────────────────────────────────────────
+st.markdown("---")
+st.markdown("### Trailing 7-Day Analysis")
+
+t1, t2, t3, t4 = st.columns(4)
+
+t1.metric(
+    "TRAILING 7D SALES",
+    f"{t7_sales:,}",
+    delta=_fmt_delta(_delta_pct(t7_sales, t7_prev_sales)),
+    help=f"New machine sales {t7_start.strftime('%b %d')} – {t7_end.strftime('%b %d')} "
+         f"vs. {t7_prev_start.strftime('%b %d')} – {t7_prev_end.strftime('%b %d')}.",
+)
+t2.metric(
+    "TRAILING 7D CANCELLATIONS",
+    f"{t7_churn:,}",
+    delta=_fmt_delta(_delta_pct(t7_churn, t7_prev_churn)),
+    delta_color="inverse",
+    help=f"True machine cancels {t7_start.strftime('%b %d')} – {t7_end.strftime('%b %d')} "
+         f"vs. previous 7-day window.",
+)
+t3.metric(
+    "TRAILING 7D NET USERS",
+    f"{'+' if t7_net >= 0 else ''}{t7_net:,}",
+    delta=_fmt_delta(_delta_pct(t7_net, t7_prev_net)),
+    help="Trailing 7d sales − trailing 7d cancellations, vs. previous 7-day window.",
+)
+t4.metric(
+    "TRAILING 7D CAC",
+    fmt_usd(t7_cac) if t7_cac > 0 else "—",
+    delta=_fmt_delta(_delta_pct(t7_cac, t7_prev_cac)),
+    delta_color="inverse",
+    help="Marketing spend (day-prorated) ÷ new machine sales over the trailing 7 days. "
+         "Spend prorates each month's total by day count.",
+)
+
+# ── Growth: ARR + Monthly Sales over time ─────────────────────────────────────
 st.markdown("---")
 st.markdown("### Growth: ARR and Monthly Sales")
 

@@ -28,7 +28,7 @@ from utils import (
 )
 
 # ── Page header ───────────────────────────────────────────────────────────────
-st.markdown("## 📊 Subscriptions overview")
+st.markdown("## 📊 Sales Overview")
 st.caption("Recharge-style layout · independent filters (not linked to sidebar).")
 
 # ── Inline filter bar ─────────────────────────────────────────────────────────
