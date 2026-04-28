@@ -477,7 +477,6 @@ with c_lb:
     )
     ranked  = sorted(AGENTS, key=lambda a: agent_stats[a]["count"], reverse=True)
     max_cnt = max(agent_stats[a]["count"] for a in ranked) or 1
-    medals  = ["🥇", "🥈", "🥉"]
 
     for rank, agent in enumerate(ranked):
         s     = agent_stats[agent]
@@ -486,7 +485,6 @@ with c_lb:
         sep   = "border-top:1px solid #f1f5f9;" if rank > 0 else ""
         st.markdown(
             f"""<div style="display:flex;align-items:center;gap:10px;padding:13px 0;{sep}">
-              <span style="font-size:1.3rem;">{medals[rank]}</span>
               <div style="flex:1;min-width:0;">
                 <div style="font-size:0.85rem;font-weight:700;color:{color};">{agent}</div>
                 <div style="font-size:0.71rem;color:#94a3b8;">
