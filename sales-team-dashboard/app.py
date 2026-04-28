@@ -31,7 +31,7 @@ SALES_SHEET_ID = "1zvnS62G88U17sxru4zTVrnzaORL0H4Am-T3Witxe_2M"
 AGENTS         = ["Paloma", "Omar", "Yasmina"]
 AGENT_COLOR    = {"Paloma": "#7c6dfa", "Omar": "#00d4a0", "Yasmina": "#ff6b9d"}
 SCOPES         = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-DEFAULT_TARGET = 800
+DEFAULT_TARGET = 2400
 
 # ── Shared CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -187,6 +187,17 @@ if df_all.empty:
     st.warning("No sales records found in the tracker.")
     st.stop()
 
+# ── Available months (for sidebar filter) ─────────────────────────────────────
+today = pd.Timestamp.today().normalize()
+_periods = sorted(df_all["date"].dropna().dt.to_period("M").unique())
+_month_labels = [p.strftime("%B %Y") for p in _periods]
+# Ensure current month appears even if no data yet
+_cur_period = today.to_period("M")
+if _cur_period not in _periods:
+    _periods.append(_cur_period)
+    _month_labels.append(_cur_period.strftime("%B %Y"))
+_default_month_idx = len(_month_labels) - 1
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR: CONTROLS
@@ -201,10 +212,18 @@ with st.sidebar:
     """, unsafe_allow_html=True)
     st.markdown("---")
 
-    st.markdown('<p style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;">Monthly Target</p>', unsafe_allow_html=True)
+    st.markdown('<p style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;">Month</p>', unsafe_allow_html=True)
+    selected_month_label = st.selectbox(
+        "Month", _month_labels, index=_default_month_idx,
+        key="sales_month", label_visibility="collapsed",
+    )
+
+    st.markdown("---")
+
+    st.markdown('<p style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;">Team Monthly Target</p>', unsafe_allow_html=True)
     monthly_target = st.number_input(
         "Target", min_value=1, max_value=10_000,
-        value=DEFAULT_TARGET, step=50,
+        value=DEFAULT_TARGET, step=100,
         key="sales_target", label_visibility="collapsed",
     )
     st.caption(f"Quarterly: {monthly_target * 3:,}")
@@ -216,27 +235,34 @@ with st.sidebar:
     st.caption("Auto-refreshes every 5 min")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# DATE CONTEXT  (based on selected month)
+# ══════════════════════════════════════════════════════════════════════════════
+_sel_period   = _periods[_month_labels.index(selected_month_label)]
+sel_year      = _sel_period.year
+sel_month     = _sel_period.month
+month_start   = pd.Timestamp(sel_year, sel_month, 1)
+days_in_month = calendar.monthrange(sel_year, sel_month)[1]
 
-# ══════════════════════════════════════════════════════════════════════════════
-# DATE CONTEXT
-# ══════════════════════════════════════════════════════════════════════════════
-today         = pd.Timestamp.today().normalize()
-cur_year      = today.year
-cur_month     = today.month
-month_start   = today.replace(day=1)
-days_in_month = calendar.monthrange(cur_year, cur_month)[1]
-days_elapsed  = today.day
-days_left     = days_in_month - days_elapsed
+if (sel_year, sel_month) == (today.year, today.month):
+    days_elapsed = today.day
+    days_left    = days_in_month - days_elapsed
+else:
+    # Past month: treat as fully elapsed
+    days_elapsed = days_in_month
+    days_left    = 0
+
+month_end = month_start + pd.offsets.MonthEnd(0)
 
 month_df = df_all[
-    (df_all["date"].dt.year  == cur_year) &
-    (df_all["date"].dt.month == cur_month)
+    (df_all["date"].dt.year  == sel_year) &
+    (df_all["date"].dt.month == sel_month)
 ].copy()
 
 # Previous month (same elapsed days, for MoM delta)
-prev_m_end    = month_start - pd.Timedelta(days=1)
-prev_m_start  = prev_m_end.replace(day=1)
-prev_cutoff   = prev_m_start + pd.Timedelta(days=days_elapsed - 1)
+prev_m_end   = month_start - pd.Timedelta(days=1)
+prev_m_start = prev_m_end.replace(day=1)
+prev_cutoff  = prev_m_start + pd.Timedelta(days=days_elapsed - 1)
 prev_df = df_all[
     (df_all["date"] >= prev_m_start) &
     (df_all["date"] <= prev_cutoff)
@@ -247,7 +273,6 @@ prev_df = df_all[
 # PER-AGENT STATS
 # ══════════════════════════════════════════════════════════════════════════════
 agent_stats: dict[str, dict] = {}
-daily_pace_needed = monthly_target / days_in_month
 
 for agent in AGENTS:
     adf   = month_df[month_df["agent"] == agent]
@@ -255,44 +280,31 @@ for agent in AGENTS:
 
     pace   = count / days_elapsed if days_elapsed > 0 else 0.0
     proj   = round(pace * days_in_month)
-    needed = max(0, round((monthly_target - count) / days_left)) if days_left > 0 else 0
 
     prod_counts = adf["product"].str.strip().value_counts().to_dict()
 
-    daily   = adf.groupby("date").size().reset_index(name="cnt")
-    all_d   = pd.DataFrame({"date": pd.date_range(month_start, today, freq="D")})
-    ddf     = all_d.merge(daily, on="date", how="left").fillna(0)
+    chart_end = month_end if days_left == 0 else today
+    daily     = adf.groupby("date").size().reset_index(name="cnt")
+    all_d     = pd.DataFrame({"date": pd.date_range(month_start, chart_end, freq="D")})
+    ddf       = all_d.merge(daily, on="date", how="left").fillna(0)
     ddf["cnt"] = ddf["cnt"].astype(int)
     ddf["cumulative"] = ddf["cnt"].cumsum()
-
-    ratio = pace / daily_pace_needed if daily_pace_needed > 0 else 0
-    if ratio >= 0.85:
-        pace_label, pace_bg, pace_fg = "↑ On Pace",    "#dcfce7", "#166534"
-    elif ratio >= 0.5:
-        pace_label, pace_bg, pace_fg = "~ Behind",     "#fef3c7", "#92400e"
-    else:
-        pace_label, pace_bg, pace_fg = "↓ Needs Push", "#fee2e2", "#991b1b"
 
     agent_stats[agent] = {
         "count":       count,
         "prev_cnt":    len(prev_df[prev_df["agent"] == agent]),
-        "pct":         count / monthly_target * 100,
         "pace":        pace,
         "proj":        proj,
-        "needed":      needed,
         "subs":        len(adf[adf["order_type"] == "Subscription"]),
         "owns":        len(adf[adf["order_type"] == "Ownership"]),
         "prod_counts": prod_counts,
         "daily_full":  ddf,
-        "pace_label":  pace_label,
-        "pace_bg":     pace_bg,
-        "pace_fg":     pace_fg,
     }
 
 team_total  = sum(s["count"]    for s in agent_stats.values())
 team_prev   = sum(s["prev_cnt"] for s in agent_stats.values())
-team_target = monthly_target * len(AGENTS)
-team_pct    = team_total / team_target * 100
+team_target = monthly_target
+team_pct    = team_total / team_target * 100 if team_target > 0 else 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -304,17 +316,18 @@ with hc1:
         f"""<h2 style="margin:0;font-size:1.5rem;font-weight:800;letter-spacing:-0.4px;">
         🏆 Sales Team Dashboard</h2>
         <p style="margin:4px 0 0;color:#64748b;font-size:0.82rem;">
-        {today.strftime('%B %Y')} &nbsp;·&nbsp; Live from Google Sheets
+        {selected_month_label} &nbsp;·&nbsp; Live from Google Sheets
         &nbsp;·&nbsp; Auto-refreshes every 5 min
         </p>""",
         unsafe_allow_html=True,
     )
 with hc2:
+    days_left_label = f"{days_left}d left" if days_left > 0 else "Month complete"
     st.markdown(
         f"""<div style="text-align:right;padding-top:8px;">
         <span style="background:#f0f9ff;border:1px solid #bae6fd;color:#0369a1;
                      padding:5px 13px;border-radius:7px;font-size:0.76rem;font-weight:600;">
-        🎯 {monthly_target:,} / agent &nbsp;·&nbsp; {days_left}d left
+        🎯 Team target: {monthly_target:,} &nbsp;·&nbsp; {days_left_label}
         </span></div>""",
         unsafe_allow_html=True,
     )
@@ -336,7 +349,7 @@ st.markdown(
     f"""<div style="margin:10px 0 4px;">
     <div style="display:flex;justify-content:space-between;font-size:0.72rem;
                 color:#64748b;margin-bottom:6px;">
-      <span>Team progress to {today.strftime('%B')} target</span>
+      <span>Team progress to {selected_month_label} target</span>
       <span style="font-weight:600;color:#0f172a;">{team_total:,} / {team_target:,}</span>
     </div></div>""",
     unsafe_allow_html=True,
@@ -358,13 +371,6 @@ cols3 = st.columns(3)
 for i, agent in enumerate(AGENTS):
     s     = agent_stats[agent]
     color = AGENT_COLOR[agent]
-    pct_c = min(s["pct"], 100)
-
-    pace_badge = (
-        f'<span style="background:{s["pace_bg"]};color:{s["pace_fg"]};'
-        f'padding:3px 9px;border-radius:99px;font-size:0.7rem;font-weight:600;">'
-        f'{s["pace_label"]}</span>'
-    )
 
     # Top products mini-list
     top_prods = sorted(s["prod_counts"].items(), key=lambda x: x[1], reverse=True)[:3]
@@ -381,32 +387,13 @@ for i, agent in enumerate(AGENTS):
             f"""<div style="background:white;border:1px solid #e2e8f0;
                 border-top:4px solid {color};border-radius:14px;
                 padding:22px 20px 18px;height:100%;">
-              <div style="display:flex;justify-content:space-between;
-                          align-items:flex-start;margin-bottom:16px;">
-                <div>
-                  <div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;
-                              letter-spacing:1px;color:{color};">{agent}</div>
-                  <div style="font-size:0.78rem;color:#64748b;margin-top:2px;">Sales Agent</div>
-                </div>
-                {pace_badge}
+              <div style="margin-bottom:16px;">
+                <div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;
+                            letter-spacing:1px;color:{color};">{agent}</div>
+                <div style="font-size:0.78rem;color:#64748b;margin-top:2px;">Sales Agent</div>
               </div>
               <div style="font-size:3.4rem;font-weight:900;color:{color};line-height:1;
-                          letter-spacing:-2px;margin-bottom:4px;">{s['count']}</div>
-              <div style="font-size:0.74rem;color:#64748b;margin-bottom:14px;">
-                of <strong style="color:#0f172a;">{monthly_target:,}</strong> target
-                &nbsp;·&nbsp;
-                <strong style="color:{color};">{s['pct']:.1f}%</strong> achieved
-              </div>
-              <div style="background:#f1f5f9;border-radius:99px;height:7px;
-                          overflow:hidden;margin-bottom:5px;">
-                <div style="background:{color};width:{pct_c:.1f}%;height:100%;
-                            border-radius:99px;"></div>
-              </div>
-              <div style="display:flex;justify-content:space-between;font-size:0.7rem;
-                          color:#94a3b8;margin-bottom:18px;">
-                <span>{s['count']} sold</span>
-                <span>{monthly_target - s['count']:,} remaining</span>
-              </div>
+                          letter-spacing:-2px;margin-bottom:20px;">{s['count']}</div>
               <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1px;
                           background:#e2e8f0;border-radius:10px;overflow:hidden;
                           margin-bottom:16px;">
@@ -451,21 +438,23 @@ with c_trend:
     st.markdown(
         '<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;'
         'letter-spacing:1.2px;color:#94a3b8;margin-bottom:4px;">'
-        'Cumulative Sales — This Month</p>',
+        f'Cumulative Sales — {selected_month_label}</p>',
         unsafe_allow_html=True,
     )
 
     fig_t = go.Figure()
 
-    # Target pace reference line
-    day_nums = list(range(1, days_elapsed + 2))
-    tgt_vals = [monthly_target * d / days_in_month for d in day_nums]
+    # Target pace reference line (implied per-agent share of team target)
+    per_agent_target = monthly_target / len(AGENTS)
+    chart_days = days_in_month if days_left == 0 else days_elapsed + 1
+    day_nums = list(range(1, chart_days + 1))
+    tgt_vals = [per_agent_target * d / days_in_month for d in day_nums]
     tgt_lbls = [
         (month_start + pd.Timedelta(days=d - 1)).strftime("%-d %b")
         for d in day_nums
     ]
     fig_t.add_trace(go.Scatter(
-        x=tgt_lbls, y=tgt_vals, name="Target Pace",
+        x=tgt_lbls, y=tgt_vals, name="Target Pace (per agent)",
         line=dict(color="rgba(245,158,11,0.45)", width=1.5, dash="dot"),
         mode="lines",
         hovertemplate="<b>%{x}</b> · Target pace: %{y:.0f}<extra></extra>",
@@ -542,7 +531,7 @@ c_prod, c_type = st.columns([3, 1])
 with c_prod:
     st.markdown(
         '<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;'
-        'letter-spacing:1.2px;color:#94a3b8;margin-bottom:4px;">Product Mix — This Month</p>',
+        f'letter-spacing:1.2px;color:#94a3b8;margin-bottom:4px;">Product Mix — {selected_month_label}</p>',
         unsafe_allow_html=True,
     )
     prod_order = month_df["product"].str.strip().value_counts().index.tolist()
@@ -621,7 +610,7 @@ st.dataframe(recent, use_container_width=True, hide_index=True)
 st.markdown("---")
 st.caption(
     f"📊 {len(df_all):,} total records &nbsp;·&nbsp; "
-    f"{len(month_df):,} in {today.strftime('%B %Y')} &nbsp;·&nbsp; "
+    f"{len(month_df):,} in {selected_month_label} &nbsp;·&nbsp; "
     f"Refreshed: {pd.Timestamp.now().strftime('%H:%M')} &nbsp;·&nbsp; "
     f"Auto-refreshes every 5 min"
 )
