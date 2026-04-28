@@ -330,28 +330,37 @@ else:
 st.markdown("---")
 st.markdown("### Trailing 7-Day Analysis")
 
+# Daily averages — first three cards report per-day means (totals ÷ 7).
+t7_sales_avg       = t7_sales       / 7
+t7_prev_sales_avg  = t7_prev_sales  / 7
+t7_churn_avg       = t7_churn       / 7
+t7_prev_churn_avg  = t7_prev_churn  / 7
+t7_net_avg         = t7_net         / 7
+t7_prev_net_avg    = t7_prev_net    / 7
+
 t1, t2, t3, t4 = st.columns(4)
 
 t1.metric(
-    "TRAILING 7D SALES",
-    f"{t7_sales:,}",
-    delta=_fmt_delta(_delta_pct(t7_sales, t7_prev_sales)),
-    help=f"New machine sales {t7_start.strftime('%b %d')} – {t7_end.strftime('%b %d')} "
-         f"vs. {t7_prev_start.strftime('%b %d')} – {t7_prev_end.strftime('%b %d')}.",
+    "AVG DAILY SALES (T7D)",
+    f"{t7_sales_avg:.1f}",
+    delta=_fmt_delta(_delta_pct(t7_sales_avg, t7_prev_sales_avg)),
+    help=f"Average new machine sales per day, {t7_start.strftime('%b %d')} – "
+         f"{t7_end.strftime('%b %d')} (total ÷ 7) vs. previous 7-day window.",
 )
 t2.metric(
-    "TRAILING 7D CANCELLATIONS",
-    f"{t7_churn:,}",
-    delta=_fmt_delta(_delta_pct(t7_churn, t7_prev_churn)),
+    "AVG DAILY CANCELLATIONS (T7D)",
+    f"{t7_churn_avg:.1f}",
+    delta=_fmt_delta(_delta_pct(t7_churn_avg, t7_prev_churn_avg)),
     delta_color="inverse",
-    help=f"True machine cancels {t7_start.strftime('%b %d')} – {t7_end.strftime('%b %d')} "
-         f"vs. previous 7-day window.",
+    help=f"Average true machine cancels per day, {t7_start.strftime('%b %d')} – "
+         f"{t7_end.strftime('%b %d')} (total ÷ 7) vs. previous 7-day window.",
 )
 t3.metric(
-    "TRAILING 7D NET USERS",
-    f"{'+' if t7_net >= 0 else ''}{t7_net:,}",
-    delta=_fmt_delta(_delta_pct(t7_net, t7_prev_net)),
-    help="Trailing 7d sales − trailing 7d cancellations, vs. previous 7-day window.",
+    "AVG DAILY NET USERS (T7D)",
+    f"{'+' if t7_net_avg >= 0 else ''}{t7_net_avg:.1f}",
+    delta=_fmt_delta(_delta_pct(t7_net_avg, t7_prev_net_avg)),
+    help="Average net users added per day = (T7d sales − T7d cancellations) ÷ 7, "
+         "vs. previous 7-day window.",
 )
 t4.metric(
     "TRAILING 7D CAC",
