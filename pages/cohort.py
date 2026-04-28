@@ -184,21 +184,45 @@ with view_col:
 cohort_labels = [cm.strftime("%b %Y") for cm in retention_df.index]
 month_cols    = [f"Month {i}" for i in range(MAX_MONTHS)]
 
+# Per-cell text colors so that light-coloured cells get dark text and
+# vice-versa. Without this, light cells render white-on-near-white and
+# the numbers vanish. We embed the colour into the cell text via an HTML
+# <span>, which Plotly honours when texttemplate="%{text}".
+DARK_TEXT  = "#1e3a8a"   # deep blue — contrasts with light cells
+LIGHT_TEXT = "#ffffff"   # white     — contrasts with dark cells
+
+
+def _wrap(text_str: str, color: str) -> str:
+    return f"<span style='color:{color}'>{text_str}</span>"
+
+
 if view == "Retention count":
     # Convert % back to counts using each cohort's size
-    z_vals = retention_df.values * (size_series.values[:, None] / 100)
-    text_vals = np.where(
-        np.isnan(retention_df.values),
-        "",
-        np.round(z_vals).astype("Int64").astype(str) if False else
-        np.vectorize(lambda v: "" if np.isnan(v) else f"{int(round(v))}")(z_vals),
-    )
+    z_vals    = retention_df.values * (size_series.values[:, None] / 100)
+    z_max     = float(np.nanmax(z_vals)) if np.isfinite(np.nanmax(z_vals)) else 0.0
+    threshold = z_max * 0.45  # below = light cell → dark text
+    text_vals = np.empty(z_vals.shape, dtype=object)
+    for i in range(z_vals.shape[0]):
+        for j in range(z_vals.shape[1]):
+            v = z_vals[i, j]
+            if np.isnan(v):
+                text_vals[i, j] = ""
+                continue
+            colour = LIGHT_TEXT if v >= threshold else DARK_TEXT
+            text_vals[i, j] = _wrap(f"{int(round(v))}", colour)
     colorscale = [[0, "#1e1b4b"], [0.5, "#6366f1"], [1, "#c7d2fe"]]
 else:
-    z_vals = retention_df.values
-    text_vals = np.vectorize(
-        lambda v: "" if np.isnan(v) else f"{v:.0f}%"
-    )(z_vals)
+    z_vals    = retention_df.values
+    threshold = 65.0  # absolute % threshold — below 65% gets dark text
+    text_vals = np.empty(z_vals.shape, dtype=object)
+    for i in range(z_vals.shape[0]):
+        for j in range(z_vals.shape[1]):
+            v = z_vals[i, j]
+            if np.isnan(v):
+                text_vals[i, j] = ""
+                continue
+            colour = LIGHT_TEXT if v >= threshold else DARK_TEXT
+            text_vals[i, j] = _wrap(f"{v:.0f}%", colour)
     colorscale = [
         [0.00, "#f1f5f9"],
         [0.50, "#a5b4fc"],
@@ -213,7 +237,8 @@ fig_heat = go.Figure(
         y=cohort_labels,
         text=text_vals,
         texttemplate="%{text}",
-        textfont=dict(color="white", size=11),
+        # Don't set textfont.color — we colour each cell via HTML spans above
+        textfont=dict(size=11),
         colorscale=colorscale,
         showscale=True,
         hovertemplate="Cohort %{y}<br>%{x}<br>Value: %{text}<extra></extra>",
