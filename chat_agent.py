@@ -48,8 +48,29 @@ def _client():
 
 MODEL_ID = "claude-sonnet-4-5-20250929"
 
+# Pricing for cost tracking (claude-sonnet-4-5-20250929) — USD per million tokens
+INPUT_USD_PER_MTOK   = 3.00
+OUTPUT_USD_PER_MTOK  = 15.00
+
 PRODUCTS = ["Model 1", "Nano+", "Bubble", "Flat", "Nano Tank"]
 MARKETS  = ["UAE", "KSA", "USA"]
+
+
+def _calc_cost(usage) -> float:
+    """Convert an Anthropic Usage object into a USD cost estimate."""
+    in_tok    = getattr(usage, "input_tokens", 0) or 0
+    out_tok   = getattr(usage, "output_tokens", 0) or 0
+    cache_w   = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    cache_r   = getattr(usage, "cache_read_input_tokens", 0) or 0
+    in_total  = in_tok + cache_w + cache_r
+    return (
+        in_total * INPUT_USD_PER_MTOK  / 1_000_000
+        + out_tok * OUTPUT_USD_PER_MTOK / 1_000_000
+    )
+
+
+class BudgetExceeded(RuntimeError):
+    """Raised when a chat session has consumed its allotted USD budget."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -508,29 +529,44 @@ it's truly impossible to proceed.
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent loop
 # ─────────────────────────────────────────────────────────────────────────────
-def run_agent(user_message: str, history: list[dict] | None = None,
-              max_iterations: int = 8) -> str:
+def run_agent(
+    user_message: str,
+    history: list[dict] | None = None,
+    *,
+    cost_budget_usd: float = 0.50,
+    cost_used_usd:   float = 0.0,
+    max_iterations:  int   = 8,
+) -> tuple[str, float]:
     """
-    Run a tool-using Claude agent loop and return the final text response.
+    Run a tool-using Claude agent loop with a hard USD budget.
 
-    Parameters
-    ----------
-    user_message : str
-        The current user turn (already stored in `history` is fine; this is
-        kept for clarity/future use).
-    history : list[dict]
-        Full chat history including the latest user message:
-        [{"role": "user"|"assistant", "content": str}, ...]
+    Returns
+    -------
+    (response_text, total_cost_usd_after_this_call)
+
+    Raises
+    ------
+    BudgetExceeded
+        If `cost_used_usd >= cost_budget_usd` before the call begins.
+
+    If the budget is hit *during* the agent loop, the call returns early
+    with a partial answer that explains the budget was reached.
     """
+    if cost_used_usd >= cost_budget_usd:
+        raise BudgetExceeded(
+            f"Session budget of ${cost_budget_usd:.2f} already used "
+            f"(${cost_used_usd:.3f}). Start a new chat to reset."
+        )
+
     client = _client()
 
-    # Convert UI history to Anthropic messages format
     messages: list[dict[str, Any]] = []
     for msg in history or []:
-        # Skip empty assistant messages (could happen mid-stream)
         if not msg.get("content"):
             continue
         messages.append({"role": msg["role"], "content": msg["content"]})
+
+    cost_total = float(cost_used_usd)
 
     for _ in range(max_iterations):
         resp = client.messages.create(
@@ -541,10 +577,14 @@ def run_agent(user_message: str, history: list[dict] | None = None,
             messages=messages,
         )
 
+        # Accrue cost from THIS round trip
+        try:
+            cost_total += _calc_cost(resp.usage)
+        except Exception:
+            pass  # never let cost-tracking failure break the loop
+
         if resp.stop_reason == "tool_use":
-            # Save the assistant's tool-use block
             messages.append({"role": "assistant", "content": resp.content})
-            # Execute each tool_use block, return tool_results
             tool_results: list[dict[str, Any]] = []
             for block in resp.content:
                 if getattr(block, "type", None) == "tool_use":
@@ -557,11 +597,20 @@ def run_agent(user_message: str, history: list[dict] | None = None,
                         except Exception as exc:
                             result = {"error": f"{type(exc).__name__}: {exc}"}
                     tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": json.dumps(result, default=str),
+                        "type":          "tool_result",
+                        "tool_use_id":   block.id,
+                        "content":       json.dumps(result, default=str),
                     })
             messages.append({"role": "user", "content": tool_results})
+
+            # Hard stop if budget is now exhausted — don't fire another turn.
+            if cost_total >= cost_budget_usd:
+                return (
+                    f"⚠️ Stopped mid-analysis: chat session budget of "
+                    f"**${cost_budget_usd:.2f}** reached "
+                    f"(spent ${cost_total:.3f}). Click *New chat* to reset.",
+                    cost_total,
+                )
             continue
 
         # Final assistant response
@@ -569,6 +618,13 @@ def run_agent(user_message: str, history: list[dict] | None = None,
             getattr(b, "text", "") for b in resp.content
             if getattr(b, "type", None) == "text"
         ]
-        return "\n".join(text_parts).strip() or "_(no response)_"
+        return (
+            "\n".join(text_parts).strip() or "_(no response)_",
+            cost_total,
+        )
 
-    return "⚠️ Hit max iterations without a final answer. Try rephrasing."
+    return (
+        f"⚠️ Hit max iterations ({max_iterations}) without a final answer. "
+        "Try rephrasing.",
+        cost_total,
+    )

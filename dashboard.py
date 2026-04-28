@@ -62,91 +62,98 @@ _LOGO_PATH = os.path.join(os.path.dirname(__file__), "assets", "wisewell_logo.pn
 if os.path.exists(_LOGO_PATH):
     st.logo(_LOGO_PATH, size="small")
 
-# ── Sidebar (Ask Claude + force-refresh only — page filters live in each page)
-# Chat state — cleared every time the user clicks the open button, so each
-# session of the dialog starts fresh.
-st.session_state.setdefault("_chat_open",     False)
+# ── Sidebar (chat + force-refresh — page filters live in each page) ──────────
+
+# Hard cap on Anthropic API spend per chat session. Hitting this stops the
+# agent and the user must click "New chat" to reset. Tweak as desired.
+CHAT_SESSION_BUDGET_USD = 0.50
+
+# Chat state (session-scoped — cleared by "New chat" button)
 st.session_state.setdefault("_chat_messages", [])
+st.session_state.setdefault("_chat_cost_usd", 0.0)
 
+SUGGESTED_PROMPTS = [
+    "How are sales tracking vs this month's target?",
+    "What are some worrying trends I should know about?",
+    "Are newer cohorts retaining better than older ones?",
+    "How does our trailing 7-day CAC compare to last week?",
+]
 
-@st.dialog("💬 Ask Claude — Wisewell Data Assistant", width="large")
-def _ask_claude_dialog():
-    """Modal chat dialog. State persists across reruns within the dialog;
-    sidebar button clears state on each fresh open."""
-    msgs_key = "_chat_messages"
+with st.sidebar:
+    st.markdown("---")
+    st.markdown("#### 💬 Ask Claude")
 
-    # Suggested prompts as quick-tap buttons (only when chat is empty)
-    if not st.session_state[msgs_key]:
-        st.caption("Try one of these or type your own question:")
-        sc1, sc2 = st.columns(2)
-        suggestions = [
-            "How many Nano Tanks did we sell in the last 6 months?",
-            "What are some worrying retention trends?",
-            "Compare UAE vs KSA churn this month",
-            "What's our trailing 30-day CAC by market?",
-        ]
-        for i, sug in enumerate(suggestions):
-            col = sc1 if i % 2 == 0 else sc2
-            if col.button(sug, key=f"sug_{i}", use_container_width=True):
+    msgs    = st.session_state["_chat_messages"]
+    used    = float(st.session_state["_chat_cost_usd"])
+    budget  = CHAT_SESSION_BUDGET_USD
+    pct     = min(used / budget, 1.0) if budget > 0 else 0.0
+
+    # Suggestion chips when chat is empty
+    if not msgs:
+        st.caption("Try one of these:")
+        for i, sug in enumerate(SUGGESTED_PROMPTS):
+            if st.button(sug, key=f"sug_{i}", use_container_width=True):
                 st.session_state["_pending_question"] = sug
                 st.rerun()
 
-    # Chat history container (scrollable)
-    chat_box = st.container(height=420, border=True)
-    with chat_box:
-        for msg in st.session_state[msgs_key]:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+    # Chat history (only render when there's at least one message)
+    if msgs:
+        chat_box = st.container(height=320, border=True)
+        with chat_box:
+            for m in msgs:
+                with st.chat_message(m["role"]):
+                    st.markdown(m["content"])
 
-    # Read input — either from chat_input or a suggested-prompt button
-    prompt = st.chat_input("Ask anything about Wisewell's data…")
+    # Budget meter
+    bar_col = "🟢" if pct < 0.5 else ("🟡" if pct < 0.9 else "🔴")
+    st.progress(pct)
+    st.caption(f"{bar_col} Session spend: **${used:.3f} / ${budget:.2f}**")
+
+    # New chat button
+    if st.button("🔄 New chat", use_container_width=True, key="chat_new"):
+        st.session_state["_chat_messages"] = []
+        st.session_state["_chat_cost_usd"] = 0.0
+        st.rerun()
+
+    # Input — chat_input pinned to bottom of sidebar by Streamlit
+    prompt = st.chat_input("Ask anything about Wisewell's data…", key="sb_chat")
     if not prompt and st.session_state.get("_pending_question"):
         prompt = st.session_state.pop("_pending_question")
 
     if prompt:
-        st.session_state[msgs_key].append({"role": "user", "content": prompt})
-        with chat_box:
-            with st.chat_message("user"):
-                st.markdown(prompt)
-            with st.chat_message("assistant"):
-                with st.spinner("Analysing your data…"):
-                    try:
-                        from chat_agent import run_agent
-                        response = run_agent(prompt, st.session_state[msgs_key])
-                    except Exception as exc:
-                        response = f"⚠️ **Error:** `{type(exc).__name__}: {exc}`"
-                st.markdown(response)
-        st.session_state[msgs_key].append({"role": "assistant", "content": response})
-        st.rerun()
+        if used >= budget:
+            st.error(
+                f"Session budget reached (${budget:.2f}). "
+                "Click *New chat* to start over."
+            )
+        else:
+            st.session_state["_chat_messages"].append(
+                {"role": "user", "content": prompt}
+            )
+            with st.spinner("Analysing your data…"):
+                try:
+                    from chat_agent import BudgetExceeded, run_agent
+                    response, new_total = run_agent(
+                        prompt,
+                        st.session_state["_chat_messages"],
+                        cost_budget_usd=budget,
+                        cost_used_usd=used,
+                    )
+                    st.session_state["_chat_cost_usd"] = new_total
+                except BudgetExceeded as e:
+                    response = f"⚠️ {e}"
+                except Exception as exc:
+                    response = f"⚠️ **Error:** `{type(exc).__name__}: {exc}`"
+            st.session_state["_chat_messages"].append(
+                {"role": "assistant", "content": response}
+            )
+            st.rerun()
 
-    # Footer: clear chat & close button
-    st.divider()
-    cols = st.columns([1, 1, 4])
-    if cols[0].button("🔄 New chat", use_container_width=True, key="chat_clear"):
-        st.session_state[msgs_key] = []
-        st.rerun()
-    if cols[1].button("Close", use_container_width=True, key="chat_close"):
-        st.session_state[msgs_key] = []
-        st.session_state["_chat_open"] = False
-        st.rerun()
-
-
-with st.sidebar:
     st.markdown("---")
-    if st.button("💬 Ask Claude", use_container_width=True, key="s_chat_open",
-                 type="primary"):
-        st.session_state["_chat_messages"] = []  # always start fresh
-        st.session_state["_chat_open"]     = True
-        st.rerun()
-
     if st.button("↻ Force refresh", use_container_width=True, key="s_btn"):
         st.cache_data.clear()
         st.rerun()
     st.caption("Auto-refreshes every 5 min")
-
-# Render dialog if flagged open
-if st.session_state["_chat_open"]:
-    _ask_claude_dialog()
 
 # ── Page router ───────────────────────────────────────────────────────────────
 pg = st.navigation([
