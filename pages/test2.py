@@ -55,7 +55,7 @@ with c2:
 
 with c3:
     granularity = st.selectbox(
-        "Display", ["Daily", "Monthly", "Quarterly"], index=1, key="t2_gran",
+        "Display", ["Daily", "Monthly", "Quarterly"], index=0, key="t2_gran",
     )
 
 with c4:
@@ -233,6 +233,7 @@ with mode_col:
     mode = st.radio(
         "Metric",
         ["Churn rate", "Cancellation count"],
+        index=1,
         horizontal=True,
         key="t2_chart1_mode",
         label_visibility="collapsed",
@@ -377,6 +378,24 @@ else:
                 )
             )
 
+    # Annotations: total count + % of all cancels, placed at the right edge
+    grand_total = float(reason_totals.sum()) if reason_totals.sum() else 0.0
+    max_total   = float(reason_totals.max()) if len(reason_totals) else 0.0
+    annotations = []
+    for reason in reason_order:
+        total = float(reason_totals.loc[reason])
+        pct   = (total / grand_total * 100) if grand_total > 0 else 0.0
+        annotations.append(dict(
+            x=total,
+            y=reason,
+            text=f"<b>{int(total)}</b>  ·  {pct:.0f}%",
+            showarrow=False,
+            xanchor="left",
+            yanchor="middle",
+            font=dict(color="#e2e8f0", size=11),
+            xshift=8,  # small gap right of the bar
+        ))
+
     fig_reasons.update_layout(
         barmode="stack",
         title=dict(
@@ -387,10 +406,16 @@ else:
         paper_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#e2e8f0", size=11),
         height=max(340, 34 * len(reason_order) + 80),
-        margin=dict(l=10, r=10, t=45, b=30),
-        xaxis=dict(gridcolor="rgba(148,163,184,0.15)", zeroline=False),
+        margin=dict(l=10, r=120, t=45, b=30),  # extra right margin for the callouts
+        # Extend x-axis ~18% past the longest bar so the right-side
+        # "<count> · <pct>%" callouts have room to render.
+        xaxis=dict(
+            gridcolor="rgba(148,163,184,0.15)", zeroline=False,
+            range=[0, max_total * 1.18 if max_total > 0 else 1],
+        ),
         yaxis=dict(showgrid=False, categoryorder="array", categoryarray=reason_order),
         legend=dict(orientation="h", yanchor="top", y=1.12, xanchor="right", x=1),
+        annotations=annotations,
     )
     st.plotly_chart(fig_reasons, use_container_width=True)
 

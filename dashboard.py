@@ -1,6 +1,6 @@
 """
 Wisewell Dashboard — entry point.
-Renders the shared sidebar and routes to Sales / Retention pages.
+Renders the shared sidebar and routes to pages.
 """
 
 # Streamlit hot-reload re-runs this script without restarting Python, which can
@@ -9,12 +9,10 @@ Renders the shared sidebar and routes to Sales / Retention pages.
 import sys
 sys.modules.pop("utils", None)
 
-from datetime import date
-
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-from utils import PRODUCT_ORDER, SHARED_CSS
+from utils import SHARED_CSS
 
 # ── Page config (must be first Streamlit call) ────────────────────────────────
 st.set_page_config(
@@ -46,7 +44,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Sidebar (shared across all pages) ─────────────────────────────────────────
+# ── Sidebar (branding + force-refresh only — page-level filters live in pages)
 with st.sidebar:
     st.markdown(
         """
@@ -59,31 +57,6 @@ with st.sidebar:
     )
     st.markdown("---")
 
-    st.markdown('<p class="section-label">Country</p>', unsafe_allow_html=True)
-    st.radio(
-        "Country", ["All", "UAE", "KSA", "USA"],
-        index=0, key="s_country", label_visibility="collapsed",
-    )
-
-    st.markdown('<p class="section-label">Product</p>', unsafe_allow_html=True)
-    st.radio(
-        "Product", ["All"] + PRODUCT_ORDER,
-        index=0, key="s_product", label_visibility="collapsed",
-    )
-
-    st.markdown("---")
-    st.markdown('<p class="section-label">Date range</p>', unsafe_allow_html=True)
-    today_d = date.today()
-    st.date_input(
-        "Range",
-        value=(date(2025, 1, 1), today_d),
-        min_value=date(2022, 1, 1),
-        max_value=today_d,
-        key="s_daterange",
-        label_visibility="collapsed",
-    )
-
-    st.markdown("---")
     if st.button("↻ Force refresh", use_container_width=True, key="s_btn"):
         st.cache_data.clear()
         st.rerun()
@@ -92,10 +65,8 @@ with st.sidebar:
 # ── Page router ───────────────────────────────────────────────────────────────
 pg = st.navigation([
     st.Page("pages/executive_summary.py", title="Executive Summary", icon="🎯"),
-    st.Page("pages/sales.py",             title="Sales",             icon="📈"),
-    st.Page("pages/retention.py",         title="Retention",         icon="🔄"),
-    st.Page("pages/test.py",              title="Test",              icon="🧪"),
-    st.Page("pages/test2.py",             title="Test 2",            icon="🧪"),
+    st.Page("pages/test.py",              title="Sales",             icon="📈"),
+    st.Page("pages/test2.py",             title="Retention",         icon="🔄"),
     st.Page("pages/cohort.py",            title="Cohort Analysis",   icon="📊"),
 ])
 pg.run()

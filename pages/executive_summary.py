@@ -54,12 +54,21 @@ def _apply_mkt(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── Point-in-time helpers ─────────────────────────────────────────────────────
 def _active_users_at(ts: pd.Timestamp) -> int:
+    """Total user base = active machine subs + active ownership."""
     a_sub = _apply_mkt(get_active_subscriptions(as_of=ts))
     a_own = _apply_mkt(get_active_ownership(as_of=ts))
     return (
         int(a_sub["qty"].sum() if a_sub is not None and not a_sub.empty else 0)
         + int(a_own["qty"].sum() if a_own is not None and not a_own.empty else 0)
     )
+
+
+def _active_machine_subs_at(ts: pd.Timestamp) -> int:
+    """Active machine subs only — denominator for the churn-rate scorecard
+    (matches the convention used on the Retention page).
+    """
+    a_sub = _apply_mkt(get_active_subscriptions(as_of=ts))
+    return int(a_sub["qty"].sum() if a_sub is not None and not a_sub.empty else 0)
 
 
 def _arr_usd_at(end_ts: pd.Timestamp) -> float:
@@ -112,21 +121,36 @@ def _churned_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> int:
 
 
 def _marketing_spend_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> float:
-    """Total marketing spend in USD for the period (Country-aware)."""
+    """
+    Day-prorated marketing spend in USD for [start_ts, end_ts] inclusive.
+
+    The Marketing Spend tab is monthly-grained, so to get an accurate
+    figure for sub-month windows (MTD, trailing 7 days, etc.) we
+    prorate each month's spend by the number of days from the window
+    that fall inside it.
+    """
     mkt = load_marketing_spend()
     if mkt is None or mkt.empty:
         return 0.0
-    in_window = mkt[(mkt["month_dt"] >= start_ts.to_period("M").to_timestamp())
-                    & (mkt["month_dt"] <= end_ts.to_period("M").to_timestamp())]
-    if in_window.empty:
-        return 0.0
-    if mkt_filter == "UAE":
-        return float(in_window["uae_usd"].fillna(0).sum())
-    if mkt_filter == "KSA":
-        return float(in_window["ksa_usd"].fillna(0).sum())
-    if mkt_filter == "USA":
-        return float(in_window["usa_usd"].fillna(0).sum())
-    return float(in_window["total_usd"].fillna(0).sum())
+
+    col_by_market = {
+        "UAE": "uae_usd", "KSA": "ksa_usd", "USA": "usa_usd",
+    }
+    col = col_by_market.get(mkt_filter, "total_usd")
+
+    month_to_spend = {
+        ms: float(spend) if pd.notna(spend) else 0.0
+        for ms, spend in zip(mkt["month_dt"], mkt[col])
+    }
+
+    total = 0.0
+    days = pd.date_range(start_ts.normalize(), end_ts.normalize(), freq="D")
+    for day in days:
+        month_start    = day.to_period("M").to_timestamp()
+        days_in_month  = (month_start + pd.offsets.MonthEnd(0)).day
+        spend_for_mo   = month_to_spend.get(month_start, 0.0)
+        total         += spend_for_mo / days_in_month
+    return total
 
 
 def _delta_pct(cur_val: float, prev_val: float) -> float | None:
@@ -142,13 +166,22 @@ def _fmt_delta(delta: float | None) -> str:
     return f"{sign}{delta:.1f}%"
 
 
-# ── Row 1: Headline KPIs ──────────────────────────────────────────────────────
+# ── Headline KPI computations ─────────────────────────────────────────────────
 today_d   = date.today()
 today_ts  = pd.Timestamp(today_d)
 mtd_start = pd.Timestamp(today_d.replace(day=1))
 # Previous full month for deltas
 prev_end   = mtd_start - pd.Timedelta(days=1)
 prev_start = prev_end.to_period("M").to_timestamp()
+
+# Today / yesterday for the "Today's Sales" scorecard
+yesterday_ts = today_ts - pd.Timedelta(days=1)
+
+# Trailing 7-day windows (inclusive of today for the current window)
+t7_start          = today_ts - pd.Timedelta(days=6)
+t7_end            = today_ts
+t7_prev_start     = today_ts - pd.Timedelta(days=13)
+t7_prev_end       = today_ts - pd.Timedelta(days=7)
 
 # Current-period figures
 cur_user_base   = _active_users_at(today_ts)
@@ -159,45 +192,72 @@ prev_arr  = _arr_usd_at(prev_end)
 
 cur_new     = _new_sales_in(mtd_start, today_ts)
 cur_churn   = _churned_in(mtd_start, today_ts)
-cur_net     = cur_new - cur_churn
 prev_new    = _new_sales_in(prev_start, prev_end)
 prev_churn  = _churned_in(prev_start, prev_end)
-prev_net    = prev_new - prev_churn
 
-active_at_mtd_start   = _active_users_at(mtd_start)
-active_at_prev_start  = _active_users_at(prev_start)
-cur_churn_rate   = (cur_churn / active_at_mtd_start)  if active_at_mtd_start  > 0 else 0.0
-prev_churn_rate  = (prev_churn / active_at_prev_start) if active_at_prev_start > 0 else 0.0
+# Today / yesterday sales (for "Today's Sales" scorecard)
+today_sales       = _new_sales_in(today_ts, today_ts)
+yesterday_sales   = _new_sales_in(yesterday_ts, yesterday_ts)
 
-# CAC = marketing spend / new customers (machine sales)  — over the period
+# Trailing 7d figures
+t7_sales           = _new_sales_in(t7_start, t7_end)
+t7_prev_sales      = _new_sales_in(t7_prev_start, t7_prev_end)
+t7_churn           = _churned_in(t7_start, t7_end)
+t7_prev_churn      = _churned_in(t7_prev_start, t7_prev_end)
+t7_net             = t7_sales - t7_churn
+t7_prev_net        = t7_prev_sales - t7_prev_churn
+t7_spend           = _marketing_spend_in(t7_start, t7_end)
+t7_prev_spend      = _marketing_spend_in(t7_prev_start, t7_prev_end)
+t7_cac             = (t7_spend / t7_sales)            if t7_sales      > 0 else 0.0
+t7_prev_cac        = (t7_prev_spend / t7_prev_sales)  if t7_prev_sales > 0 else 0.0
+
+# Monthly churn rate — denominator is ACTIVE MACHINE SUBS only,
+# matching the convention on the Retention page (was previously
+# subs + ownership, which inflated the denominator and showed a
+# lower rate than the Retention page).
+active_subs_mtd_start   = _active_machine_subs_at(mtd_start)
+active_subs_prev_start  = _active_machine_subs_at(prev_start)
+cur_churn_rate   = (cur_churn / active_subs_mtd_start)  if active_subs_mtd_start  > 0 else 0.0
+prev_churn_rate  = (prev_churn / active_subs_prev_start) if active_subs_prev_start > 0 else 0.0
+
+# CAC MTD
 cur_spend   = _marketing_spend_in(mtd_start, today_ts)
 prev_spend  = _marketing_spend_in(prev_start, prev_end)
 cur_cac  = (cur_spend / cur_new)   if cur_new  > 0 else 0.0
 prev_cac = (prev_spend / prev_new) if prev_new > 0 else 0.0
 
+# ── Row 1: Headline KPIs ──────────────────────────────────────────────────────
 st.markdown("---")
-k1, k2, k3, k4 = st.columns(4)
+k1, k2, k3, k4, k5 = st.columns(5)
 
 k1.metric(
+    "TODAY'S SALES",
+    f"{today_sales:,}",
+    delta=_fmt_delta(_delta_pct(today_sales, yesterday_sales)),
+    help="New machine sales today (vs. yesterday). Today is partial — "
+         "expect this to grow throughout the day.",
+)
+k2.metric(
     "ARR (USD)",
     fmt_usd(cur_arr),
     delta=_fmt_delta(_delta_pct(cur_arr, prev_arr)),
     help="Annualised run-rate from active Machine + Filter subs today vs. prior month end.",
 )
-k2.metric(
+k3.metric(
     "TOTAL USER BASE",
     f"{cur_user_base:,}",
     delta=_fmt_delta(_delta_pct(cur_user_base, prev_user_base)),
     help="Active machine subs + active ownership, as of today vs. prior month end.",
 )
-k3.metric(
+k4.metric(
     "MONTHLY CHURN RATE",
     f"{cur_churn_rate:.2%}",
     delta=_fmt_delta(_delta_pct(cur_churn_rate, prev_churn_rate)),
     delta_color="inverse",
-    help="True cancels MTD ÷ active subs at start of month.",
+    help="True machine cancels MTD ÷ active machine subs at start of month. "
+         "(Matches the Retention page denominator — machine subs only.)",
 )
-k4.metric(
+k5.metric(
     "CAC · MTD",
     fmt_usd(cur_cac) if cur_cac > 0 else "—",
     delta=_fmt_delta(_delta_pct(cur_cac, prev_cac)),
@@ -206,6 +266,39 @@ k4.metric(
         "Blended CAC = marketing spend ÷ new machine sales over the month. "
         "Per-market spend pulled from Marketing Spend tab (UAE / KSA / USA columns)."
     ),
+)
+
+# ── Row 2: Trailing 7-day KPIs ────────────────────────────────────────────────
+t1, t2, t3, t4 = st.columns(4)
+
+t1.metric(
+    "TRAILING 7D SALES",
+    f"{t7_sales:,}",
+    delta=_fmt_delta(_delta_pct(t7_sales, t7_prev_sales)),
+    help=f"New machine sales {t7_start.strftime('%b %d')} – {t7_end.strftime('%b %d')} "
+         f"vs. {t7_prev_start.strftime('%b %d')} – {t7_prev_end.strftime('%b %d')}.",
+)
+t2.metric(
+    "TRAILING 7D CANCELLATIONS",
+    f"{t7_churn:,}",
+    delta=_fmt_delta(_delta_pct(t7_churn, t7_prev_churn)),
+    delta_color="inverse",
+    help=f"True machine cancels {t7_start.strftime('%b %d')} – {t7_end.strftime('%b %d')} "
+         f"vs. previous 7-day window.",
+)
+t3.metric(
+    "TRAILING 7D NET USERS",
+    f"{'+' if t7_net >= 0 else ''}{t7_net:,}",
+    delta=_fmt_delta(_delta_pct(t7_net, t7_prev_net)),
+    help="Trailing 7d sales − trailing 7d cancellations, vs. previous 7-day window.",
+)
+t4.metric(
+    "TRAILING 7D CAC",
+    fmt_usd(t7_cac) if t7_cac > 0 else "—",
+    delta=_fmt_delta(_delta_pct(t7_cac, t7_prev_cac)),
+    delta_color="inverse",
+    help="Marketing spend (day-prorated) ÷ new machine sales over the trailing 7 days. "
+         "Spend prorates each month's total by day count.",
 )
 
 # ── MTD sales vs. target meter ────────────────────────────────────────────────
