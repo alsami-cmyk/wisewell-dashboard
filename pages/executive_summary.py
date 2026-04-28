@@ -502,33 +502,36 @@ for i, (ms, mp) in enumerate(zip(month_starts, measure_points)):
         churned_mo / active_subs_mo if active_subs_mo > 0 else None
     )
 
+churn_pct_series = [v * 100 if v is not None else None for v in churn_rate_series]
+
+_cac_max   = max((v for v in cac_series       if v is not None), default=1)
+_churn_max = max((v for v in churn_pct_series  if v is not None), default=1)
+
 fig_eff = go.Figure()
 fig_eff.add_trace(
-    go.Scatter(
+    go.Bar(
         x=x_labels,
         y=cac_series,
         name="CAC (USD)",
-        mode="lines+markers+text",
-        line=dict(color="#f59e0b", width=2.5),
-        marker=dict(size=7, color="#f59e0b", line=dict(color="#1e293b", width=1)),
+        marker_color="#f59e0b",
+        opacity=0.75,
         text=[f"${v:,.0f}" if v is not None else "" for v in cac_series],
-        textposition="top center",
+        textposition="outside",
         textfont=dict(color="#fde68a", size=10),
         cliponaxis=False,
         hovertemplate="%{x}<br>CAC: $%{y:,.0f}<extra></extra>",
-        connectgaps=True,
     )
 )
 fig_eff.add_trace(
     go.Scatter(
         x=x_labels,
-        y=[v * 100 if v is not None else None for v in churn_rate_series],
+        y=churn_pct_series,
         name="Churn Rate (%)",
         mode="lines+markers+text",
         line=dict(color="#f87171", width=2.5),
         marker=dict(size=7, color="#f87171", line=dict(color="#1e293b", width=1)),
-        text=[f"{v*100:.1f}%" if v is not None else "" for v in churn_rate_series],
-        textposition="bottom center",
+        text=[f"{v:.1f}%" if v is not None else "" for v in churn_pct_series],
+        textposition="top center",
         textfont=dict(color="#fca5a5", size=10),
         cliponaxis=False,
         yaxis="y2",
@@ -540,21 +543,26 @@ fig_eff.update_layout(
     plot_bgcolor="rgba(0,0,0,0)",
     paper_bgcolor="rgba(0,0,0,0)",
     font=dict(color="#e2e8f0", size=11),
-    height=380,
-    margin=dict(l=10, r=10, t=20, b=30),
+    height=420,
+    margin=dict(l=10, r=10, t=30, b=30),
     xaxis=dict(showgrid=False),
+    # y1 range stretched to 2.5× max so bars sit in the bottom ~40%
     yaxis=dict(
         title=dict(text="CAC (USD)", font=dict(color="#f59e0b")),
         gridcolor="rgba(148,163,184,0.15)", zeroline=False,
         tickprefix="$", tickformat=",.0f",
+        range=[0, _cac_max * 2.5],
     ),
+    # y2 range normal (1.3×) so churn line floats in the upper portion
     yaxis2=dict(
         title=dict(text="Churn Rate (%)", font=dict(color="#f87171")),
         overlaying="y", side="right",
         showgrid=False, zeroline=False,
         ticksuffix="%", tickformat=".1f",
+        range=[0, _churn_max * 1.3],
     ),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    barmode="overlay",
 )
 st.plotly_chart(fig_eff, use_container_width=True)
 
