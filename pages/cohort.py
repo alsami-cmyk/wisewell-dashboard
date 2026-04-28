@@ -75,7 +75,17 @@ if start_month_ts > end_month_ts:
 mkt_filter  = None if country_sel == "All" else country_sel
 prod_filter = None if product_sel == "All" else product_sel
 
-MAX_MONTHS = 12  # M0 … M11
+# Number of "Month K" columns to show. Dynamically sized so the oldest
+# cohort in the selected range gets to fill its entire timeline up to
+# today. Always at least 12 columns so very-recent ranges still get a
+# full first-year view.
+_today_ts   = pd.Timestamp(today_d).normalize()
+_months_old = (
+    (_today_ts.year  - start_month_ts.year) * 12
+    + (_today_ts.month - start_month_ts.month)
+    + 1
+)
+MAX_MONTHS = max(12, int(_months_old))
 
 
 # ── Build cohort matrix ───────────────────────────────────────────────────────
