@@ -45,12 +45,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Branding ──────────────────────────────────────────────────────────────────
-# st.logo() places the image at the top of the sidebar — above the page
-# navigation list (Executive Summary / Sales / Retention / Cohort Analysis).
+# Small vertical white wordmark, placed via st.logo() so it sits in the
+# top-left of the main app (and the top of the sidebar above navigation).
 import os
-_LOGO_PATH = os.path.join(os.path.dirname(__file__), "assets", "wisewell_logo_horizontal.png")
+_LOGO_PATH = os.path.join(os.path.dirname(__file__), "assets", "wisewell_logo.png")
 if os.path.exists(_LOGO_PATH):
-    st.logo(_LOGO_PATH, size="large")
+    st.logo(_LOGO_PATH, size="small")
 
 # ── Sidebar (force-refresh only — page-level filters live in each page) ───────
 with st.sidebar:
