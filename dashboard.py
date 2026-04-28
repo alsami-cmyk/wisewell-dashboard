@@ -41,6 +41,16 @@ st.markdown("""
 }
 [data-testid="stMetricDelta"] svg { display: none; }
 [data-testid="stPlotlyChart"] { border-radius: 12px; }
+
+/* Bump the st.logo() image ~3mm (about 11px) larger than its small default. */
+[data-testid="stLogo"],
+[data-testid="stSidebarLogo"] img,
+[data-testid="stHeaderLogo"] img,
+[data-testid="stLogoSpacer"] img {
+    height: 36px !important;
+    max-height: 36px !important;
+    width: auto !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
