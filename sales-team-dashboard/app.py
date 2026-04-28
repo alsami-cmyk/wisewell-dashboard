@@ -31,7 +31,7 @@ SALES_SHEET_ID = "1zvnS62G88U17sxru4zTVrnzaORL0H4Am-T3Witxe_2M"
 AGENTS         = ["Paloma", "Omar", "Yasmina"]
 AGENT_COLOR    = {"Paloma": "#7c6dfa", "Omar": "#00d4a0", "Yasmina": "#ff6b9d"}
 SCOPES         = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-DEFAULT_TARGET = 2400
+DEFAULT_TARGET = 350
 
 # ── Shared CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -443,22 +443,6 @@ with c_trend:
     )
 
     fig_t = go.Figure()
-
-    # Target pace reference line (implied per-agent share of team target)
-    per_agent_target = monthly_target / len(AGENTS)
-    chart_days = days_in_month if days_left == 0 else days_elapsed + 1
-    day_nums = list(range(1, chart_days + 1))
-    tgt_vals = [per_agent_target * d / days_in_month for d in day_nums]
-    tgt_lbls = [
-        (month_start + pd.Timedelta(days=d - 1)).strftime("%-d %b")
-        for d in day_nums
-    ]
-    fig_t.add_trace(go.Scatter(
-        x=tgt_lbls, y=tgt_vals, name="Target Pace (per agent)",
-        line=dict(color="rgba(245,158,11,0.45)", width=1.5, dash="dot"),
-        mode="lines",
-        hovertemplate="<b>%{x}</b> · Target pace: %{y:.0f}<extra></extra>",
-    ))
 
     for agent in AGENTS:
         s   = agent_stats[agent]
