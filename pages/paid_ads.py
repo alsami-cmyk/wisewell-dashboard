@@ -149,7 +149,7 @@ pri_label = f"{pri_start.strftime('%b %d')} – {pri_end.strftime('%b %d, %Y')}"
 cmp_label = f"{cmp_start.strftime('%b %d')} – {cmp_end.strftime('%b %d, %Y')}"
 st.caption(f"**Primary:** {pri_label} &nbsp;|&nbsp; **Comparison:** {cmp_label} &nbsp;|&nbsp; Market: **{market_sel}**")
 
-k1, k2, k3, k4, k5, k6 = st.columns(6)
+k1, k2, k3, k4 = st.columns(4)
 
 k1.metric(
     "SPEND",
@@ -159,31 +159,19 @@ k1.metric(
     help="Total ad spend in USD for the selected period.",
 )
 k2.metric(
-    "CLICKS",
-    f"{pri_kpi['clicks']:,}",
-    delta=_fmt_delta(_delta_pct(pri_kpi["clicks"], cmp_kpi["clicks"])),
-    help="Total link clicks.",
-)
-k3.metric(
-    "IMPRESSIONS",
-    f"{pri_kpi['impressions']:,}",
-    delta=_fmt_delta(_delta_pct(pri_kpi["impressions"], cmp_kpi["impressions"])),
-    help="Total ad impressions.",
-)
-k4.metric(
     "CTR",
     f"{pri_kpi['ctr']:.2f}%",
     delta=_fmt_delta(_delta_pct(pri_kpi["ctr"], cmp_kpi["ctr"])),
     help="Click-through rate = clicks ÷ impressions.",
 )
-k5.metric(
+k3.metric(
     "CPC",
     f"${pri_kpi['cpc']:,.2f}",
     delta=_fmt_delta(_delta_pct(pri_kpi["cpc"], cmp_kpi["cpc"])),
     delta_color="inverse",
     help="Cost per click = spend ÷ clicks.",
 )
-k6.metric(
+k4.metric(
     "CPM",
     f"${pri_kpi['cpm']:,.2f}",
     delta=_fmt_delta(_delta_pct(pri_kpi["cpm"], cmp_kpi["cpm"])),
