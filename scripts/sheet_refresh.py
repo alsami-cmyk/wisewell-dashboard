@@ -382,8 +382,8 @@ def update_dashboard(creds, machine_r, filt_r):
         str(sum(cohorts[c]["stages"].get("AUTO FLOW", 0)           for c in cohorts)),
     ])
 
-    # Clear old cohort rows then write new ones
-    sheets_clear(creds, "Dashboard!A22:I60")
+    # Clear old cohort rows then write new ones (leave rows 50+ untouched — analyst section)
+    sheets_clear(creds, "Dashboard!A22:I49")
     sheets_put(creds, "Dashboard!A22", cohort_rows)
     print(f"  Dashboard: {len(machine_r)} machine, {len(filt_r)} filter, {len(cohort_rows)-1} cohorts")
 
@@ -432,8 +432,37 @@ def main():
     # Update dashboard
     update_dashboard(creds, machine, filt)
 
-    # 5. Save snapshot metadata
-    print("\n[5/5] Saving snapshot...", flush=True)
+    # 5. Append row to Recovery Tracker
+    print("\n[5/6] Updating Recovery Tracker...", flush=True)
+    mach_debt_total = round(sum(r["est_debt"] for r in machine))
+    filt_debt_total = round(sum(r["est_debt"] for r in filt))
+    total_debt      = mach_debt_total + filt_debt_total
+    existing_dates  = sheets_get(creds, "📈 Recovery Tracker!A:A")
+    today_str       = today.isoformat()
+    # Avoid duplicate rows for same date
+    if not any(row and row[0] == today_str for row in existing_dates):
+        next_row = len(existing_dates) + 1
+        sheets_put(creds, f"📈 Recovery Tracker!A{next_row}:H{next_row}", [[
+            today_str,
+            str(len(machine)),
+            str(mach_debt_total),
+            str(len(filt)),
+            str(filt_debt_total),
+            str(total_debt),
+            "",   # Day Δ — formula set at build time per row; leave blank, sheet handles it
+            f"=SUMIF('📞 Activity Log'!$A:$A,A{next_row},'📞 Activity Log'!$L:$L)",
+        ]])
+        # Back-fill delta formula for this row
+        if next_row > 2:
+            sheets_put(creds, f"📈 Recovery Tracker!G{next_row}",
+                [[f"=F{next_row}-F{next_row-1}"]])
+        print(f"  Appended row {next_row} for {today_str}")
+    else:
+        print(f"  Row for {today_str} already exists — skipping")
+    time.sleep(0.3)
+
+    # 6. Save snapshot metadata
+    print("\n[6/6] Saving snapshot...", flush=True)
     snap = {
         "date":             today.isoformat(),
         "machine_customers": len(machine),
@@ -446,7 +475,7 @@ def main():
     with open("scripts/last_snapshot.json", "w") as f:
         json.dump(snap, f, indent=2)
 
-    print(f"\n✅ Refresh complete — {today.isoformat()}")
+    print(f"\n✅ Refresh complete — {today.isoformat()} | Sheet + Recovery Tracker updated")
     print(f"   {len(results)} total customers | AED {snap['machine_debt'] + snap['filter_debt']:,} total debt")
 
 
