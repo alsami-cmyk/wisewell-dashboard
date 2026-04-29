@@ -37,20 +37,19 @@ today_d = date.today()
 c1, c2, c3, c4, c5 = st.columns([2.4, 2.4, 1.4, 1.8, 1.4])
 
 with c1:
-    preset = st.selectbox("Period", ["MTD", "Past 7 Days", "YTD", "Custom"], key="t_preset")
+    preset = st.selectbox("Period", ["Month to Date", "Past 7 Days", "Year to Date", "Custom"], key="t_preset")
+    if preset == "Month to Date":
+        _ds, _de = today_d.replace(day=1), today_d
+    elif preset == "Past 7 Days":
+        _ds, _de = today_d - timedelta(days=6), today_d
+    elif preset == "Year to Date":
+        _ds, _de = today_d.replace(month=1, day=1), today_d
+    else:
+        _ds, _de = today_d.replace(day=1), today_d
+    date_range = st.date_input("Date range", value=(_ds, _de), key="t_daterange")
 
-if preset == "MTD":
-    p_start, p_end = today_d.replace(day=1), today_d
-elif preset == "Past 7 Days":
-    p_start, p_end = today_d - timedelta(days=6), today_d
-elif preset == "YTD":
-    p_start, p_end = today_d.replace(month=1, day=1), today_d
-else:
-    with c1:
-        date_range = st.date_input("Date range", value=(today_d.replace(day=1), today_d), key="t_daterange")
-    p_start, p_end = (date_range if isinstance(date_range, (list, tuple)) and len(date_range) == 2
-                      else (today_d.replace(day=1), today_d))
-
+p_start, p_end = (date_range if isinstance(date_range, (list, tuple)) and len(date_range) == 2
+                  else (_ds, _de))
 period_days       = max(1, (p_end - p_start).days)
 cmp_end_default   = p_start - timedelta(days=1)
 cmp_start_default = cmp_end_default - timedelta(days=period_days)
