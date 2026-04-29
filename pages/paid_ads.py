@@ -16,7 +16,8 @@ import streamlit as st
 
 from utils import fmt_usd, load_meta_ads_daily
 
-st.markdown("## 📢 Paid Ads Analysis")
+st.markdown("## 📢 Paid Ads Analysis — Meta")
+st.caption("Data source: Meta Ads only. Google Ads will be added once API access is approved.")
 
 # ── Data ─────────────────────────────────────────────────────────────────────
 df_all = load_meta_ads_daily()
@@ -36,7 +37,7 @@ with fc1:
     market_sel = st.selectbox("Market", ["All", "UAE", "KSA", "USA"], key="pa_market")
 
 with fc2:
-    granularity = st.radio("Granularity", ["Daily", "Weekly", "Monthly"], horizontal=True, key="pa_gran")
+    granularity = st.selectbox("Granularity", ["Daily", "Weekly", "Monthly"], key="pa_gran")
 
 with fc3:
     default_end   = max_date
