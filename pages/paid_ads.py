@@ -36,7 +36,7 @@ with fc1:
     market_sel = st.selectbox("Market", ["All", "UAE", "KSA", "USA"], key="pa_market")
 
 with fc2:
-    granularity = st.radio("Granularity", ["Daily", "Weekly"], horizontal=True, key="pa_gran")
+    granularity = st.radio("Granularity", ["Daily", "Weekly", "Monthly"], horizontal=True, key="pa_gran")
 
 with fc3:
     default_end   = max_date
@@ -133,7 +133,7 @@ cmp_df  = _filter(df_all, cmp_start, cmp_end)
 pri_kpi = _agg(pri_df)
 cmp_kpi = _agg(cmp_df)
 
-freq = "W-MON" if granularity == "Weekly" else "D"
+freq = "W-MON" if granularity == "Weekly" else ("MS" if granularity == "Monthly" else "D")
 
 pri_ts = _resample(pri_df, freq) if not pri_df.empty else pd.DataFrame()
 cmp_ts = _resample(cmp_df, freq) if not cmp_df.empty else pd.DataFrame()
