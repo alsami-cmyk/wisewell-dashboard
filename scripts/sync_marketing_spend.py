@@ -207,24 +207,18 @@ def get_monthly_insights(account_id: str, token: str) -> dict[str, dict]:
     return out
 
 
-def get_daily_insights(
-    account_id: str, token: str, lookback_days: int = DAILY_LOOKBACK_DAYS
-) -> dict[str, dict]:
+def get_daily_insights(account_id: str, token: str) -> dict[str, dict]:
     """
     Returns {YYYY-MM-DD: {spend, clicks, impressions, ctr_pct, cpc}} in
-    account currency for the last `lookback_days` days.
+    account currency for the full account history.
     """
-    from datetime import timedelta
-    end_date   = datetime.utcnow().date()
-    start_date = end_date - timedelta(days=lookback_days - 1)
-
     out: dict[str, dict] = {}
     url: str | None = f"{META_GRAPH}/{account_id}/insights"
     params: dict[str, Any] | None = {
         "level":          "account",
         "fields":         "spend,clicks,impressions,ctr,cpc",
         "time_increment": "1",
-        "time_range":     json.dumps({"since": str(start_date), "until": str(end_date)}),
+        "date_preset":    "maximum",
         "limit":          500,
         "access_token":   token,
     }
