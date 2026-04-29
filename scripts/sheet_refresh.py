@@ -2,7 +2,7 @@
 Wisewell Failed Payments — Daily Sheet Refresh
 Runs on GitHub Actions at 07:00 UAE (03:00 UTC) every day.
 Fetches live data from Recharge and rebuilds Machine Debt, Filter Debt, and Dashboard tabs.
-CRM tracking columns (O–AM) are preserved for existing customers.
+Tracks resolved customers daily and logs them to the ✅ Resolved tab.
 """
 
 import json
@@ -21,7 +21,8 @@ SHEET_ID      = "11GM7gxK6FG3gP7cJ7KEEitFnHVe8uxp03HNRgiqRHPc"
 MACH_GID      = 1094358245
 FILT_GID      = 990903311
 DASH_GID      = 1448003323
-SUCCESS_CACHE = "scripts/success_counts.json"
+SUCCESS_CACHE   = "scripts/success_counts.json"
+PREV_CUSTOMERS  = "scripts/last_customer_emails.json"
 
 RC_HEADERS = {
     "X-Recharge-Access-Token": RC_KEY,
@@ -388,6 +389,101 @@ def update_dashboard(creds, machine_r, filt_r):
     print(f"  Dashboard: {len(machine_r)} machine, {len(filt_r)} filter, {len(cohort_rows)-1} cohorts")
 
 
+# ── Resolved customer tracking ─────────────────────────────────────────────────
+def load_prev_customers():
+    """Load customer map from previous run: email → {name, product, est_debt, days_since, stage, earliest}."""
+    if os.path.exists(PREV_CUSTOMERS):
+        with open(PREV_CUSTOMERS) as f:
+            return json.load(f)
+    return {}
+
+
+def save_current_customers(results):
+    """Persist today's customer list for comparison tomorrow."""
+    customer_map = {
+        r["email"]: {
+            "full_name":  r["full_name"],
+            "product":    r["product"],
+            "est_debt":   r["est_debt"],
+            "days_since": r["days_since"],
+            "stage":      r["stage"],
+            "succ_cycles": r["succ_cycles"],
+            "earliest":   r["earliest"],
+            "is_filter":  r["is_filter"],
+        }
+        for r in results
+    }
+    with open(PREV_CUSTOMERS, "w") as f:
+        json.dump(customer_map, f)
+    return customer_map
+
+
+def get_activity_log_emails(creds):
+    """Return set of emails that appear anywhere in the Activity Log (col C)."""
+    rows = sheets_get(creds, "📞 Activity Log!C3:C2000")
+    return {row[0].strip().lower() for row in rows if row and row[0].strip()}
+
+
+def get_last_activity_date(creds, email):
+    """Return the most recent date logged in Activity Log for a given email."""
+    rows = sheets_get(creds, "📞 Activity Log!A3:C2000")
+    dates = [row[0] for row in rows if len(row) >= 3 and row[2].strip().lower() == email.lower()]
+    return max(dates) if dates else ""
+
+
+def log_resolved_customers(creds, prev_customers, current_emails, activity_emails, today_str):
+    """Find customers who left the funnel today and append them to ✅ Resolved."""
+    resolved = [
+        (email, data)
+        for email, data in prev_customers.items()
+        if email not in current_emails
+    ]
+
+    if not resolved:
+        print(f"  No resolved customers today")
+        return 0
+
+    print(f"  {len(resolved)} customers resolved — logging...")
+
+    # Find next empty row in Resolved tab
+    existing = sheets_get(creds, "✅ Resolved!A:A")
+    next_row = len(existing) + 1
+
+    rows_to_write = []
+    for email, d in resolved:
+        contacted = email.lower() in activity_emails
+        res_type  = "Analyst-Driven" if contacted else "Auto-Recovery / Cancelled"
+        days_in   = d.get("days_since", "")
+
+        rows_to_write.append([
+            today_str,
+            email,
+            d.get("full_name", ""),
+            d.get("product", ""),
+            str(int(d.get("est_debt", 0))),
+            str(days_in),
+            str(d.get("succ_cycles", "")),
+            d.get("stage", ""),
+            res_type,
+            d.get("earliest", ""),
+            "",   # Last Analyst Activity — filled by formula below
+        ])
+
+    if rows_to_write:
+        sheets_put(creds, f"✅ Resolved!A{next_row}", rows_to_write)
+        # Add MAXIFS formula in col K for last activity date per email
+        for i, (email, _) in enumerate(resolved):
+            row = next_row + i
+            formula = (
+                f'=IFERROR(TEXT(MAXIFS(\'📞 Activity Log\'!$A:$A,'
+                f'\'📞 Activity Log\'!$C:$C,B{row}),\"YYYY-MM-DD\"),\"\")'
+            )
+            sheets_put(creds, f"✅ Resolved!K{row}", [[formula]])
+
+    print(f"  Logged {len(rows_to_write)} resolved customers (row {next_row}+)")
+    return len(rows_to_write)
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
     print("=== Wisewell Daily Sheet Refresh ===", flush=True)
@@ -410,30 +506,37 @@ def main():
     print(f"  Machine: {len(machine)}, AED {sum(r['est_debt'] for r in machine):,.0f}")
     print(f"  Filter:  {len(filt)}, AED {sum(r['est_debt'] for r in filt):,.0f}")
 
-    # 4. Auth + preserve CRM data
-    print("\n[4/5] Refreshing sheet...", flush=True)
+    # 4. Auth + write sheet data
+    print("\n[4/6] Refreshing sheet...", flush=True)
     creds = get_sheets_creds()
-    mach_crm = get_crm_map(creds, "🔧 Machine Debt")
-    filt_crm = get_crm_map(creds, "🔄 Filter Debt")
-    print(f"  CRM data preserved: {len(mach_crm)} machine, {len(filt_crm)} filter customers")
 
     # Write machine tab
-    sheets_clear(creds, "🔧 Machine Debt!A2:AM2000")
+    sheets_clear(creds, "🔧 Machine Debt!A2:N2000")
     time.sleep(0.4)
-    sheets_put(creds, "🔧 Machine Debt!A2", make_sheet_rows(machine, mach_crm))
+    sheets_put(creds, "🔧 Machine Debt!A2", make_sheet_rows(machine, {}))
     time.sleep(0.4)
 
     # Write filter tab
-    sheets_clear(creds, "🔄 Filter Debt!A2:AM2000")
+    sheets_clear(creds, "🔄 Filter Debt!A2:N2000")
     time.sleep(0.4)
-    sheets_put(creds, "🔄 Filter Debt!A2", make_sheet_rows(filt, filt_crm))
+    sheets_put(creds, "🔄 Filter Debt!A2", make_sheet_rows(filt, {}))
     time.sleep(0.4)
 
     # Update dashboard
     update_dashboard(creds, machine, filt)
 
-    # 5. Append row to Recovery Tracker
-    print("\n[5/6] Updating Recovery Tracker...", flush=True)
+    # 5. Resolved customer tracking
+    print("\n[5/6] Checking for resolved customers...", flush=True)
+    prev_customers   = load_prev_customers()
+    current_emails   = {r["email"] for r in results}
+    activity_emails  = get_activity_log_emails(creds)
+    n_resolved = log_resolved_customers(
+        creds, prev_customers, current_emails, activity_emails, today.isoformat()
+    )
+    save_current_customers(results)
+
+    # 6. Append row to Recovery Tracker
+    print("\n[6/7] Updating Recovery Tracker...", flush=True)
     mach_debt_total = round(sum(r["est_debt"] for r in machine))
     filt_debt_total = round(sum(r["est_debt"] for r in filt))
     total_debt      = mach_debt_total + filt_debt_total
@@ -461,8 +564,8 @@ def main():
         print(f"  Row for {today_str} already exists — skipping")
     time.sleep(0.3)
 
-    # 6. Save snapshot metadata
-    print("\n[6/6] Saving snapshot...", flush=True)
+    # 7. Save snapshot metadata
+    print("\n[7/7] Saving snapshot...", flush=True)
     snap = {
         "date":             today.isoformat(),
         "machine_customers": len(machine),
