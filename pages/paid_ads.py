@@ -40,15 +40,7 @@ with fc2:
     granularity = st.selectbox("Granularity", ["Daily", "Weekly", "Monthly"], key="pa_gran")
 
 with fc3:
-    default_end   = max_date
-    default_start = max(min_date, default_end - timedelta(days=29))
-    pri_range = st.date_input(
-        "Primary period",
-        value=(default_start, default_end),
-        min_value=min_date,
-        max_value=max_date,
-        key="pa_pri",
-    )
+    pri_preset = st.selectbox("Period", ["MTD", "Past 7 Days", "YTD", "Custom"], key="pa_preset")
 
 with fc4:
     cmp_mode = st.selectbox(
@@ -57,11 +49,23 @@ with fc4:
         key="pa_cmp_mode",
     )
 
-# Resolve primary range
-if isinstance(pri_range, (list, tuple)) and len(pri_range) == 2:
-    pri_start, pri_end = pri_range
+# Resolve primary range from preset
+today_pa = max_date
+if pri_preset == "MTD":
+    pri_start, pri_end = today_pa.replace(day=1), today_pa
+elif pri_preset == "Past 7 Days":
+    pri_start, pri_end = today_pa - timedelta(days=6), today_pa
+elif pri_preset == "YTD":
+    pri_start, pri_end = today_pa.replace(month=1, day=1), today_pa
 else:
-    pri_start = pri_end = pri_range if isinstance(pri_range, date) else default_start
+    custom_range = st.date_input(
+        "Custom period",
+        value=(max(min_date, today_pa - timedelta(days=29)), today_pa),
+        min_value=min_date, max_value=max_date,
+        key="pa_pri",
+    )
+    pri_start, pri_end = (custom_range if isinstance(custom_range, (list, tuple)) and len(custom_range) == 2
+                          else (max(min_date, today_pa - timedelta(days=29)), today_pa))
 
 pri_days = (pri_end - pri_start).days + 1
 

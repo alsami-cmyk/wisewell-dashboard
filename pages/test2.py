@@ -25,22 +25,24 @@ st.markdown("## 🔄 Churn analysis")
 st.caption("Machine subscriptions · true cancels only (swaps/conversions excluded).")
 
 # ── Inline filter bar ─────────────────────────────────────────────────────────
-today_d       = date.today()
-default_start = today_d.replace(day=1)
+today_d = date.today()
 
 c1, c2, c3, c4, c5 = st.columns([2.4, 2.4, 1.4, 1.8, 1.4])
 
 with c1:
-    date_range = st.date_input(
-        "Date",
-        value=(default_start, today_d),
-        key="t2_daterange",
-    )
+    preset = st.selectbox("Period", ["MTD", "Past 7 Days", "YTD", "Custom"], key="t2_preset")
 
-if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-    p_start, p_end = date_range
+if preset == "MTD":
+    p_start, p_end = today_d.replace(day=1), today_d
+elif preset == "Past 7 Days":
+    p_start, p_end = today_d - timedelta(days=6), today_d
+elif preset == "YTD":
+    p_start, p_end = today_d.replace(month=1, day=1), today_d
 else:
-    p_start, p_end = default_start, today_d
+    with c1:
+        date_range = st.date_input("Date range", value=(today_d.replace(day=1), today_d), key="t2_daterange")
+    p_start, p_end = (date_range if isinstance(date_range, (list, tuple)) and len(date_range) == 2
+                      else (today_d.replace(day=1), today_d))
 
 period_days       = max(1, (p_end - p_start).days)
 cmp_end_default   = p_start - timedelta(days=1)
