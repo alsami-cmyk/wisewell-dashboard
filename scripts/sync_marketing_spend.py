@@ -72,6 +72,9 @@ META_GRAPH       = f"https://graph.facebook.com/{META_API_VERSION}"
 DEFAULT_SHEET_ID    = "1NjPJKswE2rXFnXsCah5Kv4tiSEi88jlGLnZwfHsp5o4"
 DEFAULT_SPEND_TAB   = "Marketing Spend - Claude"
 DEFAULT_PERF_TAB    = "Meta Ads - Claude"
+DEFAULT_DAILY_TAB   = "Meta Ads Daily - Claude"
+
+DAILY_LOOKBACK_DAYS = 90  # how many days of daily data to keep
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -93,6 +96,11 @@ SPEND_HEADER: list[str] = [
 # Performance tab header — mirrors Google Ads - Claude schema
 PERF_HEADER: list[str] = [
     "Month", "Market",
+    "Spend (USD)", "Clicks", "Impressions", "CTR (%)", "CPC (USD)",
+]
+
+DAILY_HEADER: list[str] = [
+    "Date", "Market",
     "Spend (USD)", "Clicks", "Impressions", "CTR (%)", "CPC (USD)",
 ]
 
@@ -193,6 +201,63 @@ def get_monthly_insights(account_id: str, token: str) -> dict[str, dict]:
 
     # Average the CTR and CPC across the aggregated rows
     for ym, m in out.items():
+        m["ctr_pct"] = round(m["ctr_pct"] / max(m["ctr_count"], 1), 4)
+        m["cpc"]     = round(m["cpc"]     / max(m["cpc_count"],  1), 6)
+
+    return out
+
+
+def get_daily_insights(
+    account_id: str, token: str, lookback_days: int = DAILY_LOOKBACK_DAYS
+) -> dict[str, dict]:
+    """
+    Returns {YYYY-MM-DD: {spend, clicks, impressions, ctr_pct, cpc}} in
+    account currency for the last `lookback_days` days.
+    """
+    from datetime import timedelta
+    end_date   = datetime.utcnow().date()
+    start_date = end_date - timedelta(days=lookback_days - 1)
+
+    out: dict[str, dict] = {}
+    url: str | None = f"{META_GRAPH}/{account_id}/insights"
+    params: dict[str, Any] | None = {
+        "level":          "account",
+        "fields":         "spend,clicks,impressions,ctr,cpc",
+        "time_increment": "1",
+        "time_range":     json.dumps({"since": str(start_date), "until": str(end_date)}),
+        "limit":          500,
+        "access_token":   token,
+    }
+
+    while url:
+        resp = requests.get(url, params=params, timeout=30)
+        resp.raise_for_status()
+        body = resp.json()
+        for row in body.get("data", []):
+            date_str = (row.get("date_start") or "")[:10]  # YYYY-MM-DD
+            if not date_str:
+                continue
+            if date_str not in out:
+                out[date_str] = {
+                    "spend": 0.0, "clicks": 0, "impressions": 0,
+                    "ctr_pct": 0.0, "ctr_count": 0, "cpc": 0.0, "cpc_count": 0,
+                }
+            m = out[date_str]
+            m["spend"]       += float(row.get("spend", 0) or 0)
+            m["clicks"]      += int(row.get("clicks", 0) or 0)
+            m["impressions"] += int(row.get("impressions", 0) or 0)
+            ctr = float(row.get("ctr", 0) or 0)
+            if ctr > 0:
+                m["ctr_pct"]   += ctr
+                m["ctr_count"] += 1
+            cpc = float(row.get("cpc", 0) or 0)
+            if cpc > 0:
+                m["cpc"]       += cpc
+                m["cpc_count"] += 1
+        url    = body.get("paging", {}).get("next")
+        params = None
+
+    for m in out.values():
         m["ctr_pct"] = round(m["ctr_pct"] / max(m["ctr_count"], 1), 4)
         m["cpc"]     = round(m["cpc"]     / max(m["cpc_count"],  1), 6)
 
@@ -302,6 +367,39 @@ def write_perf_tab(
     log.info("Performance tab '%s': wrote %d rows.", tab_name, len(rows))
 
 
+def write_daily_tab(
+    svc,
+    sheet_id: str,
+    tab_name: str,
+    rows: list[list],
+) -> None:
+    """Write the daily performance tab (same schema as perf tab, date-grained)."""
+    sheet_inner_id = _ensure_tab(svc, sheet_id, tab_name)
+
+    svc.spreadsheets().values().clear(
+        spreadsheetId=sheet_id, range=f"'{tab_name}'"
+    ).execute()
+
+    svc.spreadsheets().values().update(
+        spreadsheetId=sheet_id,
+        range=f"'{tab_name}'!A1",
+        valueInputOption="USER_ENTERED",
+        body={"values": [DAILY_HEADER] + rows},
+    ).execute()
+
+    svc.spreadsheets().batchUpdate(
+        spreadsheetId=sheet_id,
+        body={"requests": [{
+            "repeatCell": {
+                "range": {"sheetId": sheet_inner_id, "startRowIndex": 0, "endRowIndex": 1},
+                "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+                "fields": "userEnteredFormat.textFormat.bold",
+            }
+        }]},
+    ).execute()
+    log.info("Daily tab '%s': wrote %d rows.", tab_name, len(rows))
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 def main() -> int:
     token = os.environ.get("META_ACCESS_TOKEN")
@@ -319,9 +417,10 @@ def main() -> int:
             log.error("Missing required env var: META_AD_ACCOUNT_%s", market)
             return 1
 
-    sheet_id     = os.environ.get("SHEET_ID",       DEFAULT_SHEET_ID)
-    spend_tab    = os.environ.get("TAB_NAME",        DEFAULT_SPEND_TAB)
-    perf_tab     = os.environ.get("PERF_TAB_NAME",   DEFAULT_PERF_TAB)
+    sheet_id     = os.environ.get("SHEET_ID",        DEFAULT_SHEET_ID)
+    spend_tab    = os.environ.get("TAB_NAME",         DEFAULT_SPEND_TAB)
+    perf_tab     = os.environ.get("PERF_TAB_NAME",    DEFAULT_PERF_TAB)
+    daily_tab    = os.environ.get("DAILY_TAB_NAME",   DEFAULT_DAILY_TAB)
     sa_json      = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
     if not sa_json:
         log.error("Missing required env var: GOOGLE_SERVICE_ACCOUNT")
@@ -341,23 +440,33 @@ def main() -> int:
         currencies[market] = cur
         log.info("Meta %s billing currency: %s", market, cur)
 
-    # ── Step 2: pull full insights per account ──
+    # ── Step 2: pull monthly + daily insights per account ──
     insights_by_market: dict[str, dict[str, dict]] = {}
+    daily_by_market:    dict[str, dict[str, dict]] = {}
     for market, acc in accounts.items():
+        rate = USD_RATES[currencies[market]]
         try:
             raw = get_monthly_insights(acc, token)
+            for m in raw.values():
+                m["spend_usd"] = round(m["spend"] * rate, 2)
+                m["cpc_usd"]   = round(m["cpc"]   * rate, 4)
+            insights_by_market[market] = raw
+            total_usd = sum(v["spend_usd"] for v in raw.values())
+            log.info("Meta %s: %d months · total spend $%s", market, len(raw), _fmt_money(total_usd))
         except requests.HTTPError as e:
-            log.error("Insights fetch failed for %s (%s): %s", market, acc, e)
+            log.error("Monthly insights failed for %s (%s): %s", market, acc, e)
             insights_by_market[market] = {}
-            continue
-        rate = USD_RATES[currencies[market]]
-        # Convert spend and cpc to USD in-place
-        for m in raw.values():
-            m["spend_usd"] = round(m["spend"] * rate, 2)
-            m["cpc_usd"]   = round(m["cpc"]   * rate, 4)
-        insights_by_market[market] = raw
-        total_usd = sum(v["spend_usd"] for v in raw.values())
-        log.info("Meta %s: %d months · total spend $%s", market, len(raw), _fmt_money(total_usd))
+
+        try:
+            daily_raw = get_daily_insights(acc, token)
+            for m in daily_raw.values():
+                m["spend_usd"] = round(m["spend"] * rate, 2)
+                m["cpc_usd"]   = round(m["cpc"]   * rate, 4)
+            daily_by_market[market] = daily_raw
+            log.info("Meta %s: %d days of daily data", market, len(daily_raw))
+        except requests.HTTPError as e:
+            log.error("Daily insights failed for %s (%s): %s", market, acc, e)
+            daily_by_market[market] = {}
 
     # ── Step 3: union of all months ──
     months: set[str] = set()
@@ -408,11 +517,33 @@ def main() -> int:
                 m["cpc_usd"],
             ])
 
-    # ── Step 6: write both tabs ──
+    # ── Step 6: build daily tab rows ──
+    all_dates: set[str] = set()
+    for d in daily_by_market.values():
+        all_dates.update(d.keys())
+
+    daily_rows: list[list] = []
+    for date_str in sorted(all_dates):
+        for market in ("UAE", "KSA", "USA"):
+            m = daily_by_market[market].get(date_str)
+            if not m:
+                continue
+            daily_rows.append([
+                date_str,
+                market,
+                m["spend_usd"],
+                m["clicks"],
+                m["impressions"],
+                m["ctr_pct"],
+                m["cpc_usd"],
+            ])
+
+    # ── Step 7: write all three tabs ──
     try:
         svc = _build_sheets_svc(sa_json)
-        write_spend_tab(svc, sheet_id, spend_tab, spend_rows)
-        write_perf_tab(svc, sheet_id, perf_tab,   perf_rows)
+        write_spend_tab(svc, sheet_id, spend_tab,  spend_rows)
+        write_perf_tab( svc, sheet_id, perf_tab,   perf_rows)
+        write_daily_tab(svc, sheet_id, daily_tab,  daily_rows)
     except HttpError as e:
         log.error("Sheets API write failed: %s", e)
         return 3
