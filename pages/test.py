@@ -37,19 +37,21 @@ today_d = date.today()
 c1, c2, c3, c4, c5 = st.columns([2.4, 2.4, 1.4, 1.8, 1.4])
 
 with c1:
-    date_range = st.date_input(
+    preset = st.selectbox(
         "Date",
-        value=(today_d.replace(day=1), today_d),
-        key="t_daterange",
-        presets=[
-            {"label": "Month to Date",  "start_date": today_d.replace(day=1),             "end_date": today_d},
-            {"label": "Past 7 Days",    "start_date": today_d - timedelta(days=6),         "end_date": today_d},
-            {"label": "Year to Date",   "start_date": today_d.replace(month=1, day=1),     "end_date": today_d},
-        ],
+        ["Month to Date", "Past 7 Days", "Year to Date", "Custom"],
+        key="t_preset",
     )
-
-p_start, p_end = (date_range if isinstance(date_range, (list, tuple)) and len(date_range) == 2
-                  else (today_d.replace(day=1), today_d))
+    if preset == "Month to Date":
+        p_start, p_end = today_d.replace(day=1), today_d
+    elif preset == "Past 7 Days":
+        p_start, p_end = today_d - timedelta(days=6), today_d
+    elif preset == "Year to Date":
+        p_start, p_end = today_d.replace(month=1, day=1), today_d
+    else:
+        _custom = st.date_input("Custom range", value=(today_d.replace(day=1), today_d), key="t_daterange")
+        p_start, p_end = (_custom if isinstance(_custom, (list, tuple)) and len(_custom) == 2
+                          else (today_d.replace(day=1), today_d))
 period_days       = max(1, (p_end - p_start).days)
 cmp_end_default   = p_start - timedelta(days=1)
 cmp_start_default = cmp_end_default - timedelta(days=period_days)

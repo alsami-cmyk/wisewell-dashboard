@@ -42,18 +42,22 @@ with fc2:
 today_pa = max_date
 
 with fc3:
-    pri_range = st.date_input(
+    pri_preset = st.selectbox(
         "Date",
-        value=(today_pa.replace(day=1), today_pa),
-        min_value=min_date,
-        max_value=max_date,
-        key="pa_pri",
-        presets=[
-            {"label": "Month to Date",  "start_date": today_pa.replace(day=1),             "end_date": today_pa},
-            {"label": "Past 7 Days",    "start_date": today_pa - timedelta(days=6),         "end_date": today_pa},
-            {"label": "Year to Date",   "start_date": today_pa.replace(month=1, day=1),     "end_date": today_pa},
-        ],
+        ["Month to Date", "Past 7 Days", "Year to Date", "Custom"],
+        key="pa_preset",
     )
+    if pri_preset == "Month to Date":
+        pri_start, pri_end = today_pa.replace(day=1), today_pa
+    elif pri_preset == "Past 7 Days":
+        pri_start, pri_end = today_pa - timedelta(days=6), today_pa
+    elif pri_preset == "Year to Date":
+        pri_start, pri_end = today_pa.replace(month=1, day=1), today_pa
+    else:
+        _custom = st.date_input("Custom range", value=(today_pa.replace(day=1), today_pa),
+                                min_value=min_date, max_value=max_date, key="pa_pri")
+        pri_start, pri_end = (_custom if isinstance(_custom, (list, tuple)) and len(_custom) == 2
+                              else (today_pa.replace(day=1), today_pa))
 
 with fc4:
     cmp_mode = st.selectbox(
@@ -61,9 +65,6 @@ with fc4:
         ["Previous period", "Same period last year", "Custom"],
         key="pa_cmp_mode",
     )
-
-pri_start, pri_end = (pri_range if isinstance(pri_range, (list, tuple)) and len(pri_range) == 2
-                      else (today_pa.replace(day=1), today_pa))
 
 pri_days = (pri_end - pri_start).days + 1
 
