@@ -5,6 +5,8 @@
 .streamlit/secrets.toml
 credentials.json
 token.json
+google_ads_client_secret.json
+google_ads_token.json
 .sheet_config.json
 
 # Local sync (runs on laptop, not cloud)

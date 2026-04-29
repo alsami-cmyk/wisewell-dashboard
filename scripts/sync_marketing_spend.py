@@ -2,17 +2,17 @@
 sync_marketing_spend.py
 =======================
 
-Pulls monthly Meta Ads spend from the 3 Wisewell ad accounts (UAE, KSA, USA),
-converts to USD when needed, and writes the full historical series to the
-"Marketing Spend - Claude" tab in the Wisewell User Base Data spreadsheet.
+Pulls monthly Meta Ads metrics from the 3 Wisewell ad accounts (UAE, KSA, USA),
+converts to USD when needed, and writes two tabs to the Wisewell User Base Data
+spreadsheet:
 
-Designed to be invoked by a Cowork scheduled task (or any cron). The script
-is fully idempotent: every run rebuilds the entire data area of the tab from
-the authoritative API source. The "Marketing Spend" tab (manual, no suffix)
-is never touched.
+  "Marketing Spend - Claude"  — existing spend-aggregation tab (unchanged schema,
+                                feeds the dashboard's CAC calculation)
+  "Meta Ads - Claude"         — new per-market performance tab with spend, clicks,
+                                impressions, CTR, and CPC (mirrors the Google Ads
+                                tab schema so both channels can be combined easily)
 
-Phase 1: Meta only. Google Ads columns are written as 0.00 placeholders
-until phase 2 wires up the Google Ads API.
+Fully idempotent — every run rebuilds both tabs from the API.
 
 ────────────────────────────────────────────────────────────────────────────
 Required environment variables
@@ -28,8 +28,10 @@ Required environment variables
 
 Optional environment variables
   SHEET_ID                   Override default spreadsheet ID
-  TAB_NAME                   Override default tab name
+  TAB_NAME                   Override spend tab name
                              (default: "Marketing Spend - Claude")
+  PERF_TAB_NAME              Override performance tab name
+                             (default: "Meta Ads - Claude")
 
 ────────────────────────────────────────────────────────────────────────────
 Local invocation (for testing)
@@ -61,29 +63,26 @@ try:
     from zoneinfo import ZoneInfo
     DUBAI_TZ = ZoneInfo("Asia/Dubai")
 except Exception:
-    DUBAI_TZ = None  # logging will fall back to local time
+    DUBAI_TZ = None
 
 # ── Constants ────────────────────────────────────────────────────────────────
 META_API_VERSION = "v19.0"
 META_GRAPH       = f"https://graph.facebook.com/{META_API_VERSION}"
 
-DEFAULT_SHEET_ID = "1NjPJKswE2rXFnXsCah5Kv4tiSEi88jlGLnZwfHsp5o4"
-DEFAULT_TAB_NAME = "Marketing Spend - Claude"
+DEFAULT_SHEET_ID    = "1NjPJKswE2rXFnXsCah5Kv4tiSEi88jlGLnZwfHsp5o4"
+DEFAULT_SPEND_TAB   = "Marketing Spend - Claude"
+DEFAULT_PERF_TAB    = "Meta Ads - Claude"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# Pegged-currency conversion to USD. Do not fetch live rates — these are
-# functionally fixed by central-bank pegs.
-#   1 AED = 0.27226 USD  (peg: 3.6725 AED / USD)
-#   1 SAR = 0.26667 USD  (peg: 3.7500 SAR / USD)
 USD_RATES: dict[str, float] = {
     "USD": 1.0,
-    "AED": 0.27226,
-    "SAR": 0.26667,
+    "AED": 0.27226,   # peg: 3.6725 AED/USD
+    "SAR": 0.26667,   # peg: 3.7500 SAR/USD
 }
 
-# Sheet header — must match the existing layout exactly.
-HEADER: list[str] = [
+# Spend tab header — unchanged, matches existing dashboard reader
+SPEND_HEADER: list[str] = [
     "Month", "Total Spend",
     "UAE", "KSA", "USA",
     "META", "Google",
@@ -91,7 +90,12 @@ HEADER: list[str] = [
     "UAE - Google", "KSA - Google", "USA - Google",
 ]
 
-# ── Logging ──────────────────────────────────────────────────────────────────
+# Performance tab header — mirrors Google Ads - Claude schema
+PERF_HEADER: list[str] = [
+    "Month", "Market",
+    "Spend (USD)", "Clicks", "Impressions", "CTR (%)", "CPC (USD)",
+]
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-7s %(message)s",
@@ -100,11 +104,8 @@ logging.basicConfig(
 log = logging.getLogger("sync_marketing_spend")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────
 def _normalize_account_id(raw: str) -> str:
-    """Ensure 'act_' prefix on a Meta ad account ID."""
     raw = (raw or "").strip()
     if not raw:
         return ""
@@ -114,12 +115,10 @@ def _normalize_account_id(raw: str) -> str:
 
 
 def _ym_to_label(year_month: str) -> str:
-    """Convert 'YYYY-MM' → 'Mmm-YY' (e.g. '2026-04' → 'Apr-26')."""
     return datetime.strptime(year_month, "%Y-%m").strftime("%b-%y")
 
 
 def _fmt_money(v: float) -> str:
-    """Two-decimal with thousands separator, no $ sign."""
     return f"{v:,.2f}"
 
 
@@ -129,11 +128,8 @@ def _now_dubai_str() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M LOCAL")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Meta Ads API
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Meta Ads API ─────────────────────────────────────────────────────────────
 def get_account_currency(account_id: str, token: str) -> str:
-    """Returns the billing currency of a Meta ad account ('USD', 'AED', ...)."""
     r = requests.get(
         f"{META_GRAPH}/{account_id}",
         params={"fields": "currency", "access_token": token},
@@ -143,22 +139,27 @@ def get_account_currency(account_id: str, token: str) -> str:
     return (r.json().get("currency") or "USD").upper()
 
 
-def get_monthly_spend(account_id: str, token: str) -> dict[str, float]:
+def get_monthly_insights(account_id: str, token: str) -> dict[str, dict]:
     """
-    Returns {YYYY-MM: spend_in_account_currency}.
+    Returns {YYYY-MM: {spend, clicks, impressions, ctr_pct, cpc}} in account
+    currency (caller converts spend and cpc to USD).
 
-    Uses Meta Insights with time_increment=monthly + date_preset=maximum
-    to pull every month with non-zero activity in one request (paginated).
+    Meta returns:
+      spend       — string, e.g. "1234.56" (account currency)
+      clicks      — string integer
+      impressions — string integer
+      ctr         — string percentage, e.g. "2.5432" means 2.5432%
+      cpc         — string, e.g. "0.87" (account currency)
     """
-    out: dict[str, float] = {}
+    out: dict[str, dict] = {}
     url: str | None = f"{META_GRAPH}/{account_id}/insights"
     params: dict[str, Any] | None = {
-        "level":           "account",
-        "fields":          "spend",
-        "time_increment":  "monthly",
-        "date_preset":     "maximum",
-        "limit":           500,
-        "access_token":    token,
+        "level":          "account",
+        "fields":         "spend,clicks,impressions,ctr,cpc",
+        "time_increment": "monthly",
+        "date_preset":    "maximum",
+        "limit":          500,
+        "access_token":   token,
     }
 
     while url:
@@ -166,21 +167,45 @@ def get_monthly_spend(account_id: str, token: str) -> dict[str, float]:
         resp.raise_for_status()
         body = resp.json()
         for row in body.get("data", []):
-            spend = float(row.get("spend", 0) or 0)
-            ym    = (row.get("date_start") or "")[:7]  # YYYY-MM
+            ym = (row.get("date_start") or "")[:7]
             if not ym:
                 continue
-            out[ym] = out.get(ym, 0.0) + spend
-        # Cursor pagination — Meta returns full URL with embedded params
-        url = body.get("paging", {}).get("next")
+            if ym not in out:
+                out[ym] = {
+                    "spend": 0.0, "clicks": 0, "impressions": 0,
+                    "ctr_pct": 0.0, "ctr_count": 0, "cpc": 0.0, "cpc_count": 0,
+                }
+            m = out[ym]
+            m["spend"]       += float(row.get("spend", 0) or 0)
+            m["clicks"]      += int(row.get("clicks", 0) or 0)
+            m["impressions"] += int(row.get("impressions", 0) or 0)
+            ctr = float(row.get("ctr", 0) or 0)
+            if ctr > 0:
+                m["ctr_pct"]   += ctr
+                m["ctr_count"] += 1
+            cpc = float(row.get("cpc", 0) or 0)
+            if cpc > 0:
+                m["cpc"]       += cpc
+                m["cpc_count"] += 1
+
+        url    = body.get("paging", {}).get("next")
         params = None
+
+    # Average the CTR and CPC across the aggregated rows
+    for ym, m in out.items():
+        m["ctr_pct"] = round(m["ctr_pct"] / max(m["ctr_count"], 1), 4)
+        m["cpc"]     = round(m["cpc"]     / max(m["cpc_count"],  1), 6)
 
     return out
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Sheets writer
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Sheets helpers ────────────────────────────────────────────────────────────
+def _build_sheets_svc(sa_json: str):
+    info  = json.loads(sa_json) if isinstance(sa_json, str) else sa_json
+    creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+    return build("sheets", "v4", credentials=creds, cache_discovery=False)
+
+
 def _get_sheet_id_by_title(svc, spreadsheet_id: str, title: str) -> int:
     meta = svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
     for s in meta.get("sheets", []):
@@ -190,62 +215,94 @@ def _get_sheet_id_by_title(svc, spreadsheet_id: str, title: str) -> int:
     raise RuntimeError(f"Tab not found: {title!r}")
 
 
-def write_sheet(
-    sa_json: str,
+def _ensure_tab(svc, spreadsheet_id: str, title: str) -> int:
+    """Return sheet ID, creating the tab if it doesn't exist."""
+    meta = svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    for s in meta.get("sheets", []):
+        if s["properties"]["title"] == title:
+            return int(s["properties"]["sheetId"])
+    resp = svc.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": [{"addSheet": {"properties": {"title": title}}}]},
+    ).execute()
+    return int(resp["replies"][0]["addSheet"]["properties"]["sheetId"])
+
+
+def write_spend_tab(
+    svc,
     sheet_id: str,
     tab_name: str,
     rows: list[list[str]],
 ) -> None:
-    """
-    Replace the data area of `tab_name` with HEADER + rows.
-    Also strips inherited cell formatting on the data area so that values
-    like "Oct-23" don't get auto-displayed as "October-23" or "$0.00" via
-    legacy date / currency formats from the duplicated tab.
-    """
-    creds_info = json.loads(sa_json)
-    creds = service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
-    svc   = build("sheets", "v4", credentials=creds, cache_discovery=False)
-
-    # 1. Clear any cell formatting on rows 2..end (preserve header formatting).
+    """Write the spend-aggregation tab (existing schema, unchanged)."""
     inner_id = _get_sheet_id_by_title(svc, sheet_id, tab_name)
+
     svc.spreadsheets().batchUpdate(
         spreadsheetId=sheet_id,
-        body={
-            "requests": [
-                {
-                    "updateCells": {
-                        "range": {
-                            "sheetId":          inner_id,
-                            "startRowIndex":    1,    # row 2 (0-indexed = 1)
-                            "startColumnIndex": 0,
-                            "endColumnIndex":   13,   # cols A..M
-                        },
-                        "fields": "userEnteredFormat",  # clear all formatting
-                    }
-                }
-            ]
-        },
+        body={"requests": [{
+            "updateCells": {
+                "range": {
+                    "sheetId": inner_id,
+                    "startRowIndex": 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 13,
+                },
+                "fields": "userEnteredFormat",
+            }
+        }]},
     ).execute()
 
-    # 2. Clear values from row 2 down.
     svc.spreadsheets().values().clear(
         spreadsheetId=sheet_id, range=f"'{tab_name}'!A2:M",
     ).execute()
 
-    # 3. Write fresh data. RAW so month labels like "Mar-23" aren't parsed
-    #    as dates ("March 23 of current year") and silently remapped.
-    body = {"values": [HEADER] + rows}
     svc.spreadsheets().values().update(
         spreadsheetId=sheet_id,
         range=f"'{tab_name}'!A1",
         valueInputOption="RAW",
-        body=body,
+        body={"values": [SPEND_HEADER] + rows},
+    ).execute()
+    log.info("Spend tab '%s': wrote %d rows.", tab_name, len(rows))
+
+
+def write_perf_tab(
+    svc,
+    sheet_id: str,
+    tab_name: str,
+    rows: list[list],
+) -> None:
+    """Write the performance tab (new, per-market schema)."""
+    sheet_inner_id = _ensure_tab(svc, sheet_id, tab_name)
+
+    svc.spreadsheets().values().clear(
+        spreadsheetId=sheet_id, range=f"'{tab_name}'"
     ).execute()
 
+    svc.spreadsheets().values().update(
+        spreadsheetId=sheet_id,
+        range=f"'{tab_name}'!A1",
+        valueInputOption="USER_ENTERED",
+        body={"values": [PERF_HEADER] + rows},
+    ).execute()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────────────────────────
+    # Bold header
+    svc.spreadsheets().batchUpdate(
+        spreadsheetId=sheet_id,
+        body={"requests": [{
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_inner_id,
+                    "startRowIndex": 0, "endRowIndex": 1,
+                },
+                "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+                "fields": "userEnteredFormat.textFormat.bold",
+            }
+        }]},
+    ).execute()
+    log.info("Performance tab '%s': wrote %d rows.", tab_name, len(rows))
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
 def main() -> int:
     token = os.environ.get("META_ACCESS_TOKEN")
     if not token:
@@ -262,15 +319,15 @@ def main() -> int:
             log.error("Missing required env var: META_AD_ACCOUNT_%s", market)
             return 1
 
-    sheet_id = os.environ.get("SHEET_ID", DEFAULT_SHEET_ID)
-    tab_name = os.environ.get("TAB_NAME", DEFAULT_TAB_NAME)
-
-    sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
+    sheet_id     = os.environ.get("SHEET_ID",       DEFAULT_SHEET_ID)
+    spend_tab    = os.environ.get("TAB_NAME",        DEFAULT_SPEND_TAB)
+    perf_tab     = os.environ.get("PERF_TAB_NAME",   DEFAULT_PERF_TAB)
+    sa_json      = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
     if not sa_json:
         log.error("Missing required env var: GOOGLE_SERVICE_ACCOUNT")
         return 1
 
-    # ── Step 1: detect each account's billing currency ──
+    # ── Step 1: billing currencies ──
     currencies: dict[str, str] = {}
     for market, acc in accounts.items():
         try:
@@ -279,80 +336,83 @@ def main() -> int:
             log.error("Currency lookup failed for %s (%s): %s", market, acc, e)
             return 2
         if cur not in USD_RATES:
-            log.error(
-                "Unknown billing currency '%s' on %s (%s). "
-                "Add it to USD_RATES or fix the account currency.",
-                cur, market, acc,
-            )
+            log.error("Unknown billing currency '%s' for %s — add to USD_RATES.", cur, market)
             return 2
         currencies[market] = cur
         log.info("Meta %s billing currency: %s", market, cur)
 
-    # ── Step 2: pull monthly spend per account, convert to USD ──
-    spend_by_market: dict[str, dict[str, float]] = {}
+    # ── Step 2: pull full insights per account ──
+    insights_by_market: dict[str, dict[str, dict]] = {}
     for market, acc in accounts.items():
         try:
-            local = get_monthly_spend(acc, token)
+            raw = get_monthly_insights(acc, token)
         except requests.HTTPError as e:
             log.error("Insights fetch failed for %s (%s): %s", market, acc, e)
-            spend_by_market[market] = {}
+            insights_by_market[market] = {}
             continue
         rate = USD_RATES[currencies[market]]
-        spend_by_market[market] = {
-            ym: round(amt * rate, 2) for ym, amt in local.items()
-        }
-        total_usd = sum(spend_by_market[market].values())
-        log.info(
-            "Meta %s: %d months · total $%s",
-            market, len(local), _fmt_money(total_usd),
-        )
+        # Convert spend and cpc to USD in-place
+        for m in raw.values():
+            m["spend_usd"] = round(m["spend"] * rate, 2)
+            m["cpc_usd"]   = round(m["cpc"]   * rate, 4)
+        insights_by_market[market] = raw
+        total_usd = sum(v["spend_usd"] for v in raw.values())
+        log.info("Meta %s: %d months · total spend $%s", market, len(raw), _fmt_money(total_usd))
 
-    # ── Step 3: collect every month that appears across accounts ──
+    # ── Step 3: union of all months ──
     months: set[str] = set()
-    for d in spend_by_market.values():
+    for d in insights_by_market.values():
         months.update(d.keys())
     if not months:
-        log.warning("No spend data returned from any Meta account — aborting writes.")
+        log.warning("No data returned from any Meta account — aborting.")
         return 0
 
-    # ── Step 4: build sheet rows (sorted ascending) ──
-    rows: list[list[str]] = []
+    # ── Step 4: build spend tab rows (existing schema) ──
+    spend_rows: list[list[str]] = []
     for ym in sorted(months):
-        meta_uae = spend_by_market["UAE"].get(ym, 0.0)
-        meta_ksa = spend_by_market["KSA"].get(ym, 0.0)
-        meta_usa = spend_by_market["USA"].get(ym, 0.0)
-        meta_total = meta_uae + meta_ksa + meta_usa
+        meta_uae = insights_by_market["UAE"].get(ym, {}).get("spend_usd", 0.0)
+        meta_ksa = insights_by_market["KSA"].get(ym, {}).get("spend_usd", 0.0)
+        meta_usa = insights_by_market["USA"].get(ym, {}).get("spend_usd", 0.0)
+        meta_total   = meta_uae + meta_ksa + meta_usa
+        google_total = 0.0  # phase 2
+        grand_total  = meta_total + google_total
 
-        # Google placeholders — populated by phase 2
-        google_uae = 0.0
-        google_ksa = 0.0
-        google_usa = 0.0
-        google_total = google_uae + google_ksa + google_usa
-
-        uae_total = meta_uae + google_uae
-        ksa_total = meta_ksa + google_ksa
-        usa_total = meta_usa + google_usa
-        grand_total = meta_total + google_total
-
-        rows.append([
+        spend_rows.append([
             _ym_to_label(ym),
             _fmt_money(grand_total),
-            _fmt_money(uae_total),
-            _fmt_money(ksa_total),
-            _fmt_money(usa_total),
+            _fmt_money(meta_uae),   # UAE total = META only for now
+            _fmt_money(meta_ksa),
+            _fmt_money(meta_usa),
             _fmt_money(meta_total),
             _fmt_money(google_total),
             _fmt_money(meta_uae),
             _fmt_money(meta_ksa),
             _fmt_money(meta_usa),
-            _fmt_money(google_uae),
-            _fmt_money(google_ksa),
-            _fmt_money(google_usa),
+            "0.00", "0.00", "0.00",  # Google placeholders
         ])
 
-    # ── Step 5: write to the sheet ──
+    # ── Step 5: build performance tab rows (new schema, one row per market) ──
+    perf_rows: list[list] = []
+    for ym in sorted(months):
+        for market in ("UAE", "KSA", "USA"):
+            m = insights_by_market[market].get(ym)
+            if not m:
+                continue
+            perf_rows.append([
+                ym,
+                market,
+                m["spend_usd"],
+                m["clicks"],
+                m["impressions"],
+                m["ctr_pct"],
+                m["cpc_usd"],
+            ])
+
+    # ── Step 6: write both tabs ──
     try:
-        write_sheet(sa_json, sheet_id, tab_name, rows)
+        svc = _build_sheets_svc(sa_json)
+        write_spend_tab(svc, sheet_id, spend_tab, spend_rows)
+        write_perf_tab(svc, sheet_id, perf_tab,   perf_rows)
     except HttpError as e:
         log.error("Sheets API write failed: %s", e)
         return 3
@@ -360,13 +420,9 @@ def main() -> int:
         log.error("Unexpected sheet-write failure: %s", e)
         return 3
 
-    latest = rows[-1]
     log.info(
-        "[WW Spend Sync] %s | OK | months=%d | latest=%s $%s | "
-        "currencies={UAE:%s, KSA:%s, USA:%s}",
-        _now_dubai_str(),
-        len(rows),
-        latest[0], latest[1],
+        "[WW Meta Sync] %s | OK | months=%d | currencies={UAE:%s, KSA:%s, USA:%s}",
+        _now_dubai_str(), len(months),
         currencies["UAE"], currencies["KSA"], currencies["USA"],
     )
     return 0
