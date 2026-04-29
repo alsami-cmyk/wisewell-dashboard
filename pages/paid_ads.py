@@ -174,14 +174,14 @@ k4.metric(
 )
 k5.metric(
     "CPC",
-    fmt_usd(pri_kpi["cpc"]),
+    f"${pri_kpi['cpc']:,.2f}",
     delta=_fmt_delta(_delta_pct(pri_kpi["cpc"], cmp_kpi["cpc"])),
     delta_color="inverse",
     help="Cost per click = spend ÷ clicks.",
 )
 k6.metric(
     "CPM",
-    fmt_usd(pri_kpi["cpm"]),
+    f"${pri_kpi['cpm']:,.2f}",
     delta=_fmt_delta(_delta_pct(pri_kpi["cpm"], cmp_kpi["cpm"])),
     delta_color="inverse",
     help="Cost per 1,000 impressions = spend ÷ impressions × 1,000.",
