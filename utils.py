@@ -55,6 +55,7 @@ RAW_TABS = [
     "Shopify - UAE",  "Shopify - KSA",  "Shopify - USA",
     "Offline - Subscriptions", "Offline - Ownership", "Returns",
     "Marketing Spend",
+    "Meta Ads Daily - Claude",
 ]
 # Historical (hardcoded) tabs — pre-Sep-2025 final truth
 HIST_TABS = ["Monthly Sales", "Monthly Cancellations", "Monthly User Base"]
@@ -676,6 +677,30 @@ def load_marketing_spend() -> pd.DataFrame:
     df["usa_usd"]   = _spend("USA")
 
     return df[["month_dt", "total_usd", "uae_usd", "ksa_usd", "usa_usd"]].sort_values("month_dt").reset_index(drop=True)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_meta_ads_daily() -> pd.DataFrame:
+    """
+    Meta Ads Daily - Claude tab → daily performance per market.
+    Returns: date (Timestamp), market, spend_usd, clicks, impressions, ctr_pct, cpc_usd
+    """
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    rows = raw_data.get("Meta Ads Daily - Claude", [])
+    df   = _rows_to_df(rows)
+    empty = pd.DataFrame(columns=["date", "market", "spend_usd", "clicks", "impressions", "ctr_pct", "cpc_usd"])
+    if df.empty:
+        return empty
+
+    df.columns = ["date", "market", "spend_usd", "clicks", "impressions", "ctr_pct", "cpc_usd"]
+    df["date"]        = pd.to_datetime(df["date"], errors="coerce")
+    df["spend_usd"]   = pd.to_numeric(df["spend_usd"],   errors="coerce").fillna(0.0)
+    df["clicks"]      = pd.to_numeric(df["clicks"],      errors="coerce").fillna(0).astype(int)
+    df["impressions"] = pd.to_numeric(df["impressions"], errors="coerce").fillna(0).astype(int)
+    df["ctr_pct"]     = pd.to_numeric(df["ctr_pct"],     errors="coerce").fillna(0.0)
+    df["cpc_usd"]     = pd.to_numeric(df["cpc_usd"],     errors="coerce").fillna(0.0)
+    df = df[df["date"].notna()].copy()
+    return df.sort_values("date").reset_index(drop=True)
 
 
 # ── Shopify store analytics ────────────────────────────────────────────────────
