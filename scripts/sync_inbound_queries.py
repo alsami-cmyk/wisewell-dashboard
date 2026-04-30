@@ -49,7 +49,7 @@ from googleapiclient.errors import HttpError
 # ── Constants ────────────────────────────────────────────────────────────────
 DEFAULT_SHEET_ID = "1zvnS62G88U17sxru4zTVrnzaORL0H4Am-T3Witxe_2M"
 DEFAULT_TAB = "Inbound Queries"
-DEFAULT_LOOKBACK = 30
+DEFAULT_LOOKBACK = 15
 DEFAULT_LABEL = "Product information"
 DATE_COL_HEADER_HUMAN = "%-d %b, %Y"  # e.g. "1 Apr, 2026"
 
