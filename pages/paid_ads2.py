@@ -38,7 +38,6 @@ from utils import (
     load_meta_ads_daily,
     load_meta_ads_campaign_daily,
     load_shopify_website_analytics,
-    load_shopify_website_live_today,
     load_sessions_by_source,
     load_channel_attribution_unified,
     load_top_landing_pages,
@@ -67,24 +66,13 @@ st.caption(
 
 # ── Data load ─────────────────────────────────────────────────────────────────
 ads_daily      = load_meta_ads_daily()
-funnel_daily   = load_shopify_website_analytics()
-live_today     = load_shopify_website_live_today()
+funnel_daily   = load_shopify_website_analytics()  # today's row is upserted every 15 min by Apps Script
 campaigns      = load_meta_ads_campaign_daily()
 sources        = load_channel_attribution_unified()
 landing_pages  = load_top_landing_pages()
 sales_daily    = get_all_machine_sales()  # authoritative orders (Recharge + Shopify ownership + offline)
 
-# Merge live-today rows into the funnel dataframe (today is partial)
 TODAY = _today_dubai()
-if not live_today.empty:
-    # Drop today from historical (in case of overlap), then append live
-    if not funnel_daily.empty:
-        funnel_daily = funnel_daily[funnel_daily["date"].dt.date != TODAY]
-    keep_cols = [c for c in live_today.columns if c in funnel_daily.columns]
-    funnel_daily = pd.concat(
-        [funnel_daily, live_today[keep_cols]],
-        ignore_index=True,
-    ).sort_values("date").reset_index(drop=True)
 
 # Build a daily orders frame from authoritative sales data
 if not sales_daily.empty:

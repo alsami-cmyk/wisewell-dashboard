@@ -30,7 +30,6 @@ const SUMMARY_TABS = {
 
 const SOURCE_TAB = "Sessions by Source - Daily";   // multi-market, written to MAIN sheet
 const PAGE_TAB   = "Top Landing Pages - Daily";    // multi-market, written to MAIN sheet
-const LIVE_TAB   = "Shopify Website - Live Today"; // 3 rows (one per market), overwritten by aggregateLive()
 
 const RAW_HEADERS = [
   "timestamp", "market", "source", "event_type",
@@ -181,6 +180,24 @@ function classifyChannel(utm_source, utm_medium, referrer, fbclid, gclid) {
 
 // ── Nightly aggregation ────────────────────────────────────────────────────────
 
+/**
+ * Run every 15 min via time-driven trigger. Aggregates TODAY's events so far
+ * and upserts the result into the per-market summary tabs, plus the Sessions
+ * by Source and Top Landing Pages tabs. Today's row updates in place; once
+ * the day rolls over, that row stays as the last live snapshot.
+ */
+function aggregateToday() {
+  const now        = new Date();
+  const dateStr    = Utilities.formatDate(now, "Asia/Dubai", "dd/MM/yyyy");
+  const datePrefix = Utilities.formatDate(now, "Asia/Dubai", "yyyy-MM-dd");
+  _aggregateDate(dateStr, datePrefix);
+}
+
+/**
+ * Run at 1am via time-driven trigger. Re-runs yesterday once more to catch
+ * any 23:55-23:59 events that arrived after the last aggregateToday() call
+ * before midnight. Idempotent — same upsert semantics.
+ */
 function aggregateYesterday() {
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
@@ -190,105 +207,24 @@ function aggregateYesterday() {
 }
 
 /**
- * Aggregates TODAY's events so far and writes the result to the "Shopify
- * Website - Live Today" tab in the main sheet (one row per market). The
- * row is overwritten on each call so the tab always reflects "today as of now".
- *
- * Run on a 15-minute time-driven trigger.
+ * Manual backfill — run from the editor.
+ * Example: aggregateDate("27/04/2026")
  */
-function aggregateLive() {
-  const now        = new Date();
-  const dateStr    = Utilities.formatDate(now, "Asia/Dubai", "dd/MM/yyyy");
-  const datePrefix = Utilities.formatDate(now, "Asia/Dubai", "yyyy-MM-dd");
-  const updatedAt  = Utilities.formatDate(now, "Asia/Dubai", "yyyy-MM-dd HH:mm");
-
-  const rawSheet = getRawSheet();
-  const data = rawSheet.getDataRange().getValues();
-  if (data.length < 2) return;
-
-  const headers = data[0];
-  const tsI    = headers.indexOf("timestamp");
-  const mktI   = headers.indexOf("market");
-  const evtI   = headers.indexOf("event_type");
-  const sidI   = headers.indexOf("session_id");
-
-  // Build seen-before set per market for new vs returning
-  const seenBefore = {};
-  MARKETS.forEach(m => { seenBefore[m] = new Set(); });
-  data.slice(1).forEach(r => {
-    const ts = String(r[tsI] || "");
-    if (ts.startsWith(datePrefix)) return;
-    const mkt = String(r[mktI] || "").trim().toUpperCase();
-    const sid = String(r[sidI] || "").trim();
-    if (mkt && sid && seenBefore[mkt]) seenBefore[mkt].add(sid);
-  });
-
-  const stats = {};
-  MARKETS.forEach(m => {
-    stats[m] = {
-      sessions: new Set(), new_sessions: new Set(), returning_sessions: new Set(),
-      add_to_cart: 0, reached_checkout: 0, completed_checkout: 0,
-    };
-  });
-
-  data.slice(1).forEach(r => {
-    const ts = String(r[tsI] || "");
-    if (!ts.startsWith(datePrefix)) return;
-    const mkt = String(r[mktI] || "").trim().toUpperCase();
-    if (!stats[mkt]) return;
-    const evt = String(r[evtI] || "").trim();
-    const sid = String(r[sidI] || "").trim();
-
-    if (evt === "page_viewed") {
-      if (sid) {
-        stats[mkt].sessions.add(sid);
-        if (seenBefore[mkt].has(sid)) stats[mkt].returning_sessions.add(sid);
-        else                          stats[mkt].new_sessions.add(sid);
-      }
-    } else if (evt === "product_added_to_cart") {
-      stats[mkt].add_to_cart++;
-    } else if (evt === "checkout_started") {
-      stats[mkt].reached_checkout++;
-    } else if (evt === "checkout_completed") {
-      stats[mkt].completed_checkout++;
-    }
-  });
-
-  // Overwrite the live tab from scratch
-  const ss = SpreadsheetApp.openById(MAIN_SHEET_ID);
-  let sheet = ss.getSheetByName(LIVE_TAB);
-  const liveHeaders = [
-    "date", "market", "sessions", "new_sessions", "returning_sessions",
-    "add_to_cart", "reached_checkout", "completed_checkout", "conversion_rate",
-    "updated_at",
-  ];
-  if (!sheet) {
-    sheet = ss.insertSheet(LIVE_TAB);
-  } else {
-    sheet.clear();
-  }
-  sheet.appendRow(liveHeaders);
-  sheet.setFrozenRows(1);
-
-  MARKETS.forEach(market => {
-    const s = stats[market];
-    const sessions = s.sessions.size;
-    const cvr = sessions > 0 ? (s.completed_checkout / sessions) : 0;
-    sheet.appendRow([
-      dateStr, market, sessions, s.new_sessions.size, s.returning_sessions.size,
-      s.add_to_cart, s.reached_checkout, s.completed_checkout,
-      (cvr * 100).toFixed(2) + "%",
-      updatedAt,
-    ]);
-  });
-
-  Logger.log(`Live aggregation written for ${dateStr} at ${updatedAt}.`);
-}
-
 function aggregateDate(ddmmyyyy) {
   const parts = ddmmyyyy.split("/");
   const datePrefix = `${parts[2]}-${parts[1]}-${parts[0]}`;
   _aggregateDate(ddmmyyyy, datePrefix);
+}
+
+/** Delete all existing rows in `sheet` whose column-A value matches `dateStr`. */
+function _deleteRowsForDate(sheet, dateStr) {
+  const data = sheet.getDataRange().getValues();
+  // Walk from bottom up so deletions don't shift indices we still need
+  for (let i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]).trim() === dateStr) {
+      sheet.deleteRow(i + 1);
+    }
+  }
 }
 
 function _aggregateDate(dateStr, datePrefix) {
@@ -416,7 +352,7 @@ function _aggregateDate(dateStr, datePrefix) {
     else if (evt === "checkout_completed") bucket.completed++;
   });
 
-  // ── WRITE: Per-market daily summary ──
+  // ── UPSERT: Per-market daily summary (delete today's row, then append fresh) ──
   MARKETS.forEach(market => {
     const s = summary[market];
     const sessions = s.sessions.size;
@@ -424,57 +360,39 @@ function _aggregateDate(dateStr, datePrefix) {
     const cvrPct = (cvr * 100).toFixed(2) + "%";
 
     const sheet = getSummarySheet(market);
-    const existing = sheet.getDataRange().getValues();
-    if (existing.slice(1).some(r => String(r[0]).trim() === dateStr)) {
-      Logger.log(`${market} summary ${dateStr} already exists, skipping.`);
-      return;
-    }
+    _deleteRowsForDate(sheet, dateStr);
     sheet.appendRow([
       dateStr, market, sessions, s.new_sessions.size, s.returning_sessions.size,
       s.add_to_cart, s.reached_checkout, s.completed_checkout, cvrPct,
     ]);
   });
 
-  // ── WRITE: Sessions by Source - Daily ──
+  // ── UPSERT: Sessions by Source - Daily ──
   const sourceSheet = getMainTab(SOURCE_TAB, SOURCE_HEADERS);
-  const sourceExisting = sourceSheet.getDataRange().getValues();
-  const alreadyHaveSource = sourceExisting.slice(1).some(r =>
-    String(r[0]).trim() === dateStr
-  );
-  if (!alreadyHaveSource) {
-    MARKETS.forEach(market => {
-      Object.values(sourceStats[market])
-        .sort((a, b) => b.sessions - a.sessions)
-        .forEach(row => {
-          sourceSheet.appendRow([
-            dateStr, market, row.channel, row.utm_source, row.utm_campaign,
-            row.sessions, row.atc, row.reached, row.completed,
-          ]);
-        });
-    });
-  } else {
-    Logger.log(`Source breakdown for ${dateStr} already exists, skipping.`);
-  }
-
-  // ── WRITE: Top Landing Pages - Daily (top 10 per market) ──
-  const pageSheet = getMainTab(PAGE_TAB, PAGE_HEADERS);
-  const pageExisting = pageSheet.getDataRange().getValues();
-  const alreadyHavePages = pageExisting.slice(1).some(r =>
-    String(r[0]).trim() === dateStr
-  );
-  if (!alreadyHavePages) {
-    MARKETS.forEach(market => {
-      const pages = Object.entries(pageStats[market])
-        .map(([pg, s]) => ({ page: pg, sessions: s.sessions.size, atc: s.atc }))
-        .sort((a, b) => b.sessions - a.sessions)
-        .slice(0, 10);
-      pages.forEach(p => {
-        pageSheet.appendRow([dateStr, market, p.page, p.sessions, p.atc]);
+  _deleteRowsForDate(sourceSheet, dateStr);
+  MARKETS.forEach(market => {
+    Object.values(sourceStats[market])
+      .sort((a, b) => b.sessions - a.sessions)
+      .forEach(row => {
+        sourceSheet.appendRow([
+          dateStr, market, row.channel, row.utm_source, row.utm_campaign,
+          row.sessions, row.atc, row.reached, row.completed,
+        ]);
       });
-    });
-  } else {
-    Logger.log(`Page breakdown for ${dateStr} already exists, skipping.`);
-  }
+  });
 
-  Logger.log(`Aggregated ${dateStr} for ${MARKETS.length} markets.`);
+  // ── UPSERT: Top Landing Pages - Daily (top 10 per market) ──
+  const pageSheet = getMainTab(PAGE_TAB, PAGE_HEADERS);
+  _deleteRowsForDate(pageSheet, dateStr);
+  MARKETS.forEach(market => {
+    const pages = Object.entries(pageStats[market])
+      .map(([pg, s]) => ({ page: pg, sessions: s.sessions.size, atc: s.atc }))
+      .sort((a, b) => b.sessions - a.sessions)
+      .slice(0, 10);
+    pages.forEach(p => {
+      pageSheet.appendRow([dateStr, market, p.page, p.sessions, p.atc]);
+    });
+  });
+
+  Logger.log("Upserted " + dateStr + " across summary + source + pages tabs.");
 }
