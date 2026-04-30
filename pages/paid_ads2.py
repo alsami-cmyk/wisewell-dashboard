@@ -33,6 +33,7 @@ from utils import (
     load_meta_ads_campaign_daily,
     load_shopify_website_analytics,
     load_sessions_by_source,
+    load_channel_attribution_unified,
     load_top_landing_pages,
 )
 
@@ -47,7 +48,7 @@ st.caption(
 ads_daily      = load_meta_ads_daily()
 funnel_daily   = load_shopify_website_analytics()
 campaigns      = load_meta_ads_campaign_daily()
-sources        = load_sessions_by_source()
+sources        = load_channel_attribution_unified()
 landing_pages  = load_top_landing_pages()
 
 if ads_daily.empty and funnel_daily.empty:
@@ -421,8 +422,7 @@ st.markdown("---")
 st.markdown("### 🌐 Traffic Source Attribution")
 
 if sources.empty:
-    st.info("Source attribution data starts populating tomorrow's first nightly aggregation. "
-            "It uses the new pixel fields (utm/referrer/fbclid/gclid).")
+    st.info("No channel data available yet. Historical Channel Hist tabs may be missing.")
 else:
     src = _filter(sources, pri_start, pri_end)
     if src.empty:
@@ -460,6 +460,28 @@ else:
                 display[["Channel","Sessions","ATC","Checkout","Orders","ATC %","CVR %"]],
                 hide_index=True, use_container_width=True,
             )
+
+        # Campaign-level breakdown (uses utm_campaign field)
+        if "utm_campaign" in src.columns:
+            with st.expander("🔬 Campaign-level UTM breakdown (top 30)"):
+                camp_agg = (src[src["utm_campaign"] != "(none)"]
+                            .groupby(["channel", "utm_source", "utm_campaign"], as_index=False)
+                            .agg(sessions=("sessions","sum"),
+                                 atc=("add_to_cart","sum"),
+                                 reached=("reached_checkout","sum"),
+                                 completed=("completed_checkout","sum"))
+                            .sort_values("sessions", ascending=False)
+                            .head(30))
+                camp_agg["cvr_pct"] = np.where(camp_agg["sessions"] > 0,
+                                               camp_agg["completed"] / camp_agg["sessions"] * 100, 0).round(2)
+                camp_agg["atc_pct"] = np.where(camp_agg["sessions"] > 0,
+                                               camp_agg["atc"] / camp_agg["sessions"] * 100, 0).round(2)
+                camp_agg = camp_agg.rename(columns={
+                    "channel":"Channel", "utm_source":"UTM Source", "utm_campaign":"UTM Campaign",
+                    "sessions":"Sessions", "atc":"ATC", "reached":"Checkout", "completed":"Orders",
+                    "atc_pct":"ATC %", "cvr_pct":"CVR %",
+                })
+                st.dataframe(camp_agg, hide_index=True, use_container_width=True)
 
 
 # ── Section 7: Top landing pages ──────────────────────────────────────────────

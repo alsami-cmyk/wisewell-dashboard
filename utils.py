@@ -865,6 +865,183 @@ def load_top_landing_pages() -> pd.DataFrame:
     return df.sort_values(["date", "market", "sessions"], ascending=[True, True, False]).reset_index(drop=True)
 
 
+# ── Historical channel attribution (Channel Hist - {market} tabs) ─────────────
+
+RAW_EVENTS_SHEET_ID = "1j9lWQC9I8HdtTguzcGGX1AewE6KkdICkhbGYqwErKKU"
+
+_CHANNEL_HIST_TABS = [
+    ("Channel Hist - UAE", "UAE"),
+    ("Channel Hist - KSA", "KSA"),
+    ("Channel Hist - USA", "USA"),
+]
+
+
+def _classify_channel_py(referrer_source: str, utm_source: str, utm_medium: str) -> str:
+    """Mirror of the Apps Script classifyChannel() — keep them in sync."""
+    rs = (referrer_source or "").strip().lower()
+    us = (utm_source      or "").strip().lower()
+    um = (utm_medium      or "").strip().lower()
+
+    # UTM-driven paid first (highest confidence)
+    if um in ("cpc", "ppc", "paid"):
+        if "google" in us:    return "Paid Search (Google)"
+        if any(s in us for s in ("facebook", "instagram", "meta")):
+            return "Paid Social (Meta)"
+        if "tiktok" in us:    return "Paid Social (TikTok)"
+        return "Paid Other"
+    if any(s in us for s in ("facebook", "instagram", "meta")):
+        return "Paid Social (Meta)"
+    if "google" in us and um != "organic":
+        return "Paid Search (Google)"
+    if "tiktok" in us:    return "Paid Social (TikTok)"
+    if "snapchat" in us:  return "Paid Social (Snapchat)"
+
+    # Email / SMS
+    if um == "email" or any(s in us for s in ("klaviyo", "mailchimp")):
+        return "Email"
+    if um == "sms":
+        return "SMS"
+
+    # Fall back on Shopify's referrer_source bucket
+    if rs == "search":   return "Organic Search"
+    if rs == "social":   return "Organic Social"
+    if rs == "email":    return "Email"
+    if rs == "referral": return "Referral"
+    if rs == "direct":   return "Direct"
+    if rs == "unknown":  return "Direct"
+    return "Direct"
+
+
+@st.cache_data(ttl=600, show_spinner="Loading channel history…")
+def load_channel_history() -> pd.DataFrame:
+    """
+    Reads historical Shopify channel-attribution exports from the raw events
+    spreadsheet (separate from the main dashboard sheet).
+
+    Tabs: Channel Hist - UAE/KSA/USA
+    Columns expected: Day, Referrer source, UTM source, UTM medium, UTM campaign,
+                      Sessions, Sessions with cart additions, Sessions reached
+                      checkout, Sessions completed checkout, Conversion rate
+
+    Returns: date, market, channel, referrer_source, utm_source, utm_medium,
+             utm_campaign, sessions, add_to_cart, reached_checkout,
+             completed_checkout
+    """
+    cols = ["date", "market", "channel", "referrer_source", "utm_source",
+            "utm_medium", "utm_campaign", "sessions", "add_to_cart",
+            "reached_checkout", "completed_checkout"]
+
+    creds = get_credentials()
+    svc   = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    frames = []
+
+    for tab, market in _CHANNEL_HIST_TABS:
+        try:
+            rows = (svc.spreadsheets().values()
+                       .get(spreadsheetId=RAW_EVENTS_SHEET_ID, range=f"'{tab}'")
+                       .execute().get("values", []))
+        except Exception as e:
+            logger.warning("Channel hist fetch failed for %s: %s", tab, e)
+            continue
+
+        if len(rows) < 2:
+            continue
+
+        headers = [h.strip().lower() for h in rows[0]]
+        df_rows = []
+        for r in rows[1:]:
+            if not r or not r[0].strip():
+                continue
+            padded = r + [""] * max(0, len(headers) - len(r))
+            d = dict(zip(headers, padded))
+            df_rows.append(d)
+
+        if not df_rows:
+            continue
+
+        df = pd.DataFrame(df_rows)
+        # First column may be "day" or "month" depending on export granularity
+        date_col = next((c for c in ("day", "month", "date") if c in df.columns), None)
+        if not date_col:
+            continue
+
+        def _int(s):
+            return int(float(str(s).replace(",", "").strip() or 0)) if str(s).strip() else 0
+
+        out = pd.DataFrame({
+            "date":             pd.to_datetime(df[date_col], dayfirst=True, errors="coerce"),
+            "market":           market,
+            "referrer_source":  df.get("referrer source", "").astype(str).str.strip().str.lower(),
+            "utm_source":       df.get("utm source",      "").astype(str).str.strip().str.lower(),
+            "utm_medium":       df.get("utm medium",      "").astype(str).str.strip().str.lower(),
+            "utm_campaign":     df.get("utm campaign",    "").astype(str).str.strip(),
+            "sessions":         df.get("sessions", 0).apply(_int),
+            "add_to_cart":      df.get("sessions with cart additions", 0).apply(_int),
+            "reached_checkout": df.get("sessions that reached checkout", 0).apply(_int),
+            "completed_checkout": df.get("sessions that completed checkout", 0).apply(_int),
+        })
+        out = out[out["date"].notna()].copy()
+        # Replace empty utm tokens with "(none)" for grouping consistency
+        for c in ("utm_source", "utm_campaign"):
+            out[c] = out[c].replace("", "(none)")
+        out["channel"] = out.apply(
+            lambda r: _classify_channel_py(r["referrer_source"], r["utm_source"], r["utm_medium"]),
+            axis=1,
+        )
+        frames.append(out[cols])
+
+    if not frames:
+        return pd.DataFrame(columns=cols)
+    return (pd.concat(frames, ignore_index=True)
+              .sort_values(["date", "market", "sessions"], ascending=[True, True, False])
+              .reset_index(drop=True))
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_channel_attribution_unified() -> pd.DataFrame:
+    """
+    Single source of truth for channel attribution: historical Shopify exports
+    UNIONED with live pixel-derived 'Sessions by Source - Daily' data.
+
+    Returns same schema as load_channel_history(). Live rows take precedence
+    when there's an overlap on (date, market, channel, utm_source, utm_campaign).
+    """
+    hist = load_channel_history()
+    live = load_sessions_by_source()
+
+    cols = ["date", "market", "channel", "referrer_source", "utm_source",
+            "utm_medium", "utm_campaign", "sessions", "add_to_cart",
+            "reached_checkout", "completed_checkout"]
+
+    if live.empty:
+        return hist if not hist.empty else pd.DataFrame(columns=cols)
+
+    # Normalise live to match historical schema
+    live = live.copy()
+    live["referrer_source"] = ""
+    live["utm_medium"]      = ""
+    live = live.rename(columns={
+        # already has: date, market, channel, utm_source, utm_campaign,
+        # sessions, add_to_cart, reached_checkout, completed_checkout
+    })
+    live = live[cols]
+
+    if hist.empty:
+        return live.sort_values(["date", "market", "sessions"], ascending=[True, True, False]).reset_index(drop=True)
+
+    # Cut historical at the first day where live data exists per market
+    live_first_by_market = (
+        live.groupby("market", as_index=False)["date"].min()
+            .rename(columns={"date": "live_first"})
+    )
+    hist_filtered = hist.merge(live_first_by_market, on="market", how="left")
+    hist_filtered = hist_filtered[
+        hist_filtered["live_first"].isna() | (hist_filtered["date"] < hist_filtered["live_first"])
+    ].drop(columns=["live_first"])
+
+    return (pd.concat([hist_filtered, live], ignore_index=True)
+              .sort_values(["date", "market", "sessions"], ascending=[True, True, False])
+              .reset_index(drop=True))
 
 
 # ── Shopify store analytics ────────────────────────────────────────────────────
