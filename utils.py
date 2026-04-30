@@ -705,6 +705,70 @@ def load_meta_ads_daily() -> pd.DataFrame:
     return df.sort_values("date").reset_index(drop=True)
 
 
+# ── Shopify live events (Web Pixel + Webhooks → Google Sheets) ────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_store_events() -> pd.DataFrame:
+    """
+    Live store funnel events written by the Shopify Web Pixel + Webhooks
+    into the 'Store Events - Live' Google Sheet tab.
+
+    Returns: timestamp (Timestamp), market, source, event_type,
+             session_id, page_path, product_id, product_title,
+             value (float), currency, order_id, checkout_id
+    """
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    rows = raw_data.get("Store Events - Live", [])
+    empty = pd.DataFrame(columns=[
+        "timestamp", "market", "source", "event_type",
+        "session_id", "page_path", "product_id", "product_title",
+        "value", "currency", "order_id", "checkout_id",
+    ])
+    if len(rows) < 2:
+        return empty
+
+    df = _rows_to_df(rows)
+    if df.empty:
+        return empty
+
+    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+    df["timestamp"] = pd.to_datetime(df.get("timestamp", ""), errors="coerce")
+    df["value"]     = pd.to_numeric(df.get("value", ""), errors="coerce").fillna(0.0)
+    return df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+
+
+def get_store_funnel(
+    df: pd.DataFrame,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    market: str | None = None,
+) -> dict:
+    """
+    Aggregate funnel metrics from load_store_events() for a given period.
+    Returns: sessions, add_to_cart, checkout_started, checkout_completed,
+             atc_rate, checkout_rate, conversion_rate
+    """
+    mask = (df["timestamp"] >= start) & (df["timestamp"] <= end)
+    if market:
+        mask &= df["market"] == market
+    d = df.loc[mask]
+
+    sessions   = d.loc[d["event_type"] == "page_viewed",          "session_id"].nunique()
+    atc        = d.loc[d["event_type"] == "product_added_to_cart", "session_id"].nunique()
+    checkout   = d.loc[d["event_type"] == "checkout_started",      "session_id"].nunique()
+    completed  = d.loc[d["event_type"] == "checkout_completed",    "session_id"].nunique()
+
+    return {
+        "sessions":            sessions,
+        "add_to_cart":         atc,
+        "checkout_started":    checkout,
+        "checkout_completed":  completed,
+        "atc_rate":            atc       / sessions  if sessions  > 0 else 0.0,
+        "checkout_rate":       checkout  / sessions  if sessions  > 0 else 0.0,
+        "conversion_rate":     completed / sessions  if sessions  > 0 else 0.0,
+    }
+
+
 # ── Shopify store analytics ────────────────────────────────────────────────────
 
 _SHOPIFY_MARKETS = [
