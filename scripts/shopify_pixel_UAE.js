@@ -7,7 +7,7 @@
  * Replace ENDPOINT with your Google Apps Script deployment URL.
  */
 
-const ENDPOINT = "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec";
+const ENDPOINT = "https://script.google.com/macros/s/AKfycbz4Pk2bYDiY3fWU_7pJ4nITF_V7APq16xOX-nFgQRDHkuQ6wWWpQoWjuZyMpvza2mq5/exec";
 const MARKET   = "UAE";
 
 function send(event_type, data) {

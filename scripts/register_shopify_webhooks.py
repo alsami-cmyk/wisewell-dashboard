@@ -6,7 +6,7 @@ Usage: python3 scripts/register_shopify_webhooks.py
 """
 import requests
 
-ENDPOINT = "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec"
+ENDPOINT = "https://script.google.com/macros/s/AKfycbz4Pk2bYDiY3fWU_7pJ4nITF_V7APq16xOX-nFgQRDHkuQ6wWWpQoWjuZyMpvza2mq5/exec"
 
 STORES = {
     "UAE": ("wisewell-uae.myshopify.com", "SHOPIFY_TOKEN_UAE"),
