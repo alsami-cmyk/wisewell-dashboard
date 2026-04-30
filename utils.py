@@ -58,6 +58,7 @@ RAW_TABS = [
     "Meta Ads Daily - Claude",
     "Meta Ads Campaign Daily - Claude",
     "Shopify Website - UAE", "Shopify Website - KSA", "Shopify Website - USA",
+    "Shopify Website - Live Today",
     "Sessions by Source - Daily",
     "Top Landing Pages - Daily",
 ]
@@ -863,6 +864,40 @@ def load_top_landing_pages() -> pd.DataFrame:
         df[c] = pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0).astype(int)
     df = df[df["date"].notna()].copy()
     return df.sort_values(["date", "market", "sessions"], ascending=[True, True, False]).reset_index(drop=True)
+
+
+# ── Live "today" snapshot from Apps Script ────────────────────────────────────
+
+@st.cache_data(ttl=120, show_spinner=False)
+def load_shopify_website_live_today() -> pd.DataFrame:
+    """
+    Today's funnel rows (one per market), updated every 15 min by the Apps
+    Script's aggregateLive() trigger. Tab: 'Shopify Website - Live Today'.
+
+    Returns: date, market, sessions, new_sessions, returning_sessions,
+             add_to_cart, reached_checkout, completed_checkout,
+             conversion_rate (float 0-1), updated_at (Timestamp)
+    """
+    cols = ["date", "market", "sessions", "new_sessions", "returning_sessions",
+            "add_to_cart", "reached_checkout", "completed_checkout",
+            "conversion_rate", "updated_at"]
+
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    rows = raw_data.get("Shopify Website - Live Today", [])
+    if len(rows) < 2:
+        return pd.DataFrame(columns=cols)
+
+    df = pd.DataFrame(rows[1:], columns=[h.strip().lower() for h in rows[0]])
+    df["date"]       = pd.to_datetime(df.get("date", ""), dayfirst=True, errors="coerce")
+    df["updated_at"] = pd.to_datetime(df.get("updated_at", ""), errors="coerce")
+    for c in ("sessions", "new_sessions", "returning_sessions",
+              "add_to_cart", "reached_checkout", "completed_checkout"):
+        df[c] = pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0).astype(int)
+
+    cr_raw = df.get("conversion_rate", "0").astype(str).str.replace("%", "").str.strip()
+    df["conversion_rate"] = pd.to_numeric(cr_raw, errors="coerce").fillna(0) / 100
+
+    return df[df["date"].notna()].reset_index(drop=True)
 
 
 # ── Historical channel attribution (Channel Hist - {market} tabs) ─────────────

@@ -19,7 +19,12 @@ Sections:
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+try:
+    from zoneinfo import ZoneInfo
+    DUBAI_TZ = ZoneInfo("Asia/Dubai")
+except Exception:
+    DUBAI_TZ = None
 
 import numpy as np
 import pandas as pd
@@ -29,13 +34,29 @@ import streamlit as st
 
 from utils import (
     fmt_usd,
+    get_all_machine_sales,
     load_meta_ads_daily,
     load_meta_ads_campaign_daily,
     load_shopify_website_analytics,
+    load_shopify_website_live_today,
     load_sessions_by_source,
     load_channel_attribution_unified,
     load_top_landing_pages,
 )
+
+
+def _today_dubai() -> date:
+    """Today's date in Asia/Dubai (the business day boundary)."""
+    if DUBAI_TZ is not None:
+        return datetime.now(DUBAI_TZ).date()
+    return date.today()
+
+
+def _fmt_money2(v: float) -> str:
+    """Format USD with 2 decimals (used for unit costs like CPC, CPM, CPS)."""
+    if v is None or v == 0:
+        return "—"
+    return f"${v:,.2f}"
 
 st.markdown("## 🎯 Paid Ads 2 — Full-Funnel Diagnostic")
 st.caption(
@@ -47,9 +68,32 @@ st.caption(
 # ── Data load ─────────────────────────────────────────────────────────────────
 ads_daily      = load_meta_ads_daily()
 funnel_daily   = load_shopify_website_analytics()
+live_today     = load_shopify_website_live_today()
 campaigns      = load_meta_ads_campaign_daily()
 sources        = load_channel_attribution_unified()
 landing_pages  = load_top_landing_pages()
+sales_daily    = get_all_machine_sales()  # authoritative orders (Recharge + Shopify ownership + offline)
+
+# Merge live-today rows into the funnel dataframe (today is partial)
+TODAY = _today_dubai()
+if not live_today.empty:
+    # Drop today from historical (in case of overlap), then append live
+    if not funnel_daily.empty:
+        funnel_daily = funnel_daily[funnel_daily["date"].dt.date != TODAY]
+    keep_cols = [c for c in live_today.columns if c in funnel_daily.columns]
+    funnel_daily = pd.concat(
+        [funnel_daily, live_today[keep_cols]],
+        ignore_index=True,
+    ).sort_values("date").reset_index(drop=True)
+
+# Build a daily orders frame from authoritative sales data
+if not sales_daily.empty:
+    orders_daily = (sales_daily
+                    .assign(date=lambda d: pd.to_datetime(d["date"]))
+                    .groupby(["date", "market"], as_index=False)["qty"].sum()
+                    .rename(columns={"qty": "orders_actual"}))
+else:
+    orders_daily = pd.DataFrame(columns=["date", "market", "orders_actual"])
 
 if ads_daily.empty and funnel_daily.empty:
     st.warning("No Meta Ads or website funnel data available yet.")
@@ -62,6 +106,9 @@ for df in (ads_daily, funnel_daily):
         date_candidates.extend([df["date"].min().date(), df["date"].max().date()])
 min_date = min(date_candidates)
 max_date = max(date_candidates)
+# Allow today even if no historical data has reached it yet
+if TODAY > max_date:
+    max_date = TODAY
 
 # ── Filters ───────────────────────────────────────────────────────────────────
 st.markdown("---")
@@ -131,29 +178,32 @@ def _filter(df: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
 def _agg_funnel(start: date, end: date) -> dict:
     a = _filter(ads_daily,    start, end)
     f = _filter(funnel_daily, start, end)
+    o = _filter(orders_daily, start, end)
     spend       = float(a["spend_usd"].sum())   if not a.empty else 0.0
     clicks      = int(a["clicks"].sum())        if not a.empty else 0
     impressions = int(a["impressions"].sum())   if not a.empty else 0
     sessions    = int(f["sessions"].sum())      if not f.empty else 0
     new_sess    = int(f["new_sessions"].sum())  if "new_sessions" in f.columns else 0
     atc         = int(f["add_to_cart"].sum())   if not f.empty else 0
-    reached     = int(f["reached_checkout"].sum())   if not f.empty else 0
-    completed   = int(f["completed_checkout"].sum()) if not f.empty else 0
+    reached     = int(f["reached_checkout"].sum())     if not f.empty else 0
+    completed   = int(f["completed_checkout"].sum())   if not f.empty else 0  # pixel — kept for funnel %
+    orders      = int(o["orders_actual"].sum())        if not o.empty else 0  # AUTHORITATIVE
 
     return {
         "spend": spend, "clicks": clicks, "impressions": impressions,
         "sessions": sessions, "new_sessions": new_sess,
         "atc": atc, "reached": reached, "completed": completed,
+        "orders": orders,                                                 # authoritative
         "ctr":           (clicks / impressions)  if impressions else 0.0,
         "cpc":           (spend  / clicks)       if clicks      else 0.0,
         "cpm":           (spend  / impressions * 1000) if impressions else 0.0,
         "cps":           (spend  / sessions)     if sessions    else 0.0,
         "cpatc":         (spend  / atc)          if atc         else 0.0,
-        "cpp":           (spend  / completed)    if completed   else 0.0,
+        "cpp":           (spend  / orders)       if orders      else 0.0,  # cost / order using authoritative
         "atc_rate":      (atc   / sessions)      if sessions    else 0.0,
         "checkout_rate": (reached / atc)         if atc         else 0.0,
         "purchase_rate": (completed / reached)   if reached     else 0.0,
-        "cvr":           (completed / sessions)  if sessions    else 0.0,
+        "cvr":           (orders   / sessions)   if sessions    else 0.0,  # CVR uses authoritative orders too
     }
 
 
@@ -182,27 +232,32 @@ cmp_ = _agg_funnel(cmp_start, cmp_end)
 
 # ── Section 1: North-Star Snapshot ────────────────────────────────────────────
 st.markdown("### North-Star Snapshot")
+range_includes_today = (pri_start <= TODAY <= pri_end)
+partial_note = "  · ⚠️ Includes today (partial)" if range_includes_today else ""
 st.caption(
     f"**{pri_start:%d %b %Y}** → **{pri_end:%d %b %Y}** "
     f"vs **{cmp_start:%d %b %Y}** → **{cmp_end:%d %b %Y}** "
-    f"({pri_days} days)"
+    f"({pri_days} days){partial_note}"
 )
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
-k1.metric("Spend",       fmt_usd(pri["spend"]),                   _delta_str(_delta_pct(pri["spend"],     cmp_["spend"])))
-k2.metric("Sessions",    f"{pri['sessions']:,}",                  _delta_str(_delta_pct(pri["sessions"],  cmp_["sessions"])))
-k3.metric("Add to Cart", f"{pri['atc']:,}",                       _delta_str(_delta_pct(pri["atc"],       cmp_["atc"])))
-k4.metric("Orders",      f"{pri['completed']:,}",                 _delta_str(_delta_pct(pri["completed"], cmp_["completed"])))
-k5.metric("CVR",         _pct(pri["cvr"]),                        _delta_str(_delta_pct(pri["cvr"],       cmp_["cvr"])))
-k6.metric("Cost/Order",  fmt_usd(pri["cpp"])  if pri["cpp"]  else "—",  _delta_str(_delta_pct(pri["cpp"], cmp_["cpp"]), invert=True))
+k1.metric("Spend",       fmt_usd(pri["spend"]),                   _delta_str(_delta_pct(pri["spend"],    cmp_["spend"])))
+k2.metric("Sessions",    f"{pri['sessions']:,}",                  _delta_str(_delta_pct(pri["sessions"], cmp_["sessions"])))
+k3.metric("Add to Cart", f"{pri['atc']:,}",                       _delta_str(_delta_pct(pri["atc"],      cmp_["atc"])))
+k4.metric("Orders",      f"{pri['orders']:,}",                    _delta_str(_delta_pct(pri["orders"],   cmp_["orders"])),
+          help="Authoritative order count from Recharge subscriptions + Shopify ownership + Offline. Different from pixel `completed_checkout` (used only for funnel chart).")
+k5.metric("CVR",         _pct(pri["cvr"]),                        _delta_str(_delta_pct(pri["cvr"],      cmp_["cvr"])),
+          help="Orders ÷ Sessions. Uses authoritative orders.")
+k6.metric("Cost/Order",  _fmt_money2(pri["cpp"]),                 _delta_str(_delta_pct(pri["cpp"],      cmp_["cpp"]), invert=True),
+          help="Meta spend ÷ authoritative orders.")
 
 k7, k8, k9, k10, k11, k12 = st.columns(6)
 k7.metric("Impressions", f"{pri['impressions']:,}",               _delta_str(_delta_pct(pri["impressions"], cmp_["impressions"])))
 k8.metric("Clicks",      f"{pri['clicks']:,}",                    _delta_str(_delta_pct(pri["clicks"],   cmp_["clicks"])))
 k9.metric("CTR",         _pct(pri["ctr"]),                        _delta_str(_delta_pct(pri["ctr"],      cmp_["ctr"])))
-k10.metric("CPC",        fmt_usd(pri["cpc"]) if pri["cpc"]  else "—", _delta_str(_delta_pct(pri["cpc"], cmp_["cpc"]),    invert=True))
-k11.metric("CPM",        fmt_usd(pri["cpm"]) if pri["cpm"]  else "—", _delta_str(_delta_pct(pri["cpm"], cmp_["cpm"]),    invert=True))
-k12.metric("Cost/Sess",  fmt_usd(pri["cps"]) if pri["cps"]  else "—", _delta_str(_delta_pct(pri["cps"], cmp_["cps"]),    invert=True))
+k10.metric("CPC",        _fmt_money2(pri["cpc"]),                 _delta_str(_delta_pct(pri["cpc"], cmp_["cpc"]), invert=True))
+k11.metric("CPM",        _fmt_money2(pri["cpm"]),                 _delta_str(_delta_pct(pri["cpm"], cmp_["cpm"]), invert=True))
+k12.metric("Cost/Sess",  _fmt_money2(pri["cps"]),                 _delta_str(_delta_pct(pri["cps"], cmp_["cps"]), invert=True))
 
 
 # ── Section 2: Anomaly Banner ─────────────────────────────────────────────────
@@ -254,46 +309,73 @@ def _daily_merged(df_funnel: pd.DataFrame, df_ads: pd.DataFrame) -> pd.DataFrame
 
 _funnel_for_check = _filter(funnel_daily, pri_start - timedelta(days=14), pri_end)
 _ads_for_check    = _filter(ads_daily,    pri_start - timedelta(days=14), pri_end)
+_orders_for_check = _filter(orders_daily, pri_start - timedelta(days=14), pri_end)
 m_daily = _daily_merged(_funnel_for_check, _ads_for_check)
+
+# Merge in authoritative orders for anomaly checks
+if not m_daily.empty and not _orders_for_check.empty:
+    _o = _orders_for_check.copy()
+    _o["date"] = pd.to_datetime(_o["date"]).dt.normalize()
+    _o_day = _o.groupby("date", as_index=False)["orders_actual"].sum()
+    m_daily = m_daily.merge(_o_day, on="date", how="left").fillna({"orders_actual": 0})
+    m_daily["orders_actual"] = m_daily["orders_actual"].astype(int)
+elif not m_daily.empty:
+    m_daily["orders_actual"] = 0
 
 if not m_daily.empty:
     m_daily["ctr"]      = np.where(m_daily["impressions"] > 0, m_daily["clicks"] / m_daily["impressions"], 0)
-    m_daily["cvr"]      = np.where(m_daily["sessions"]    > 0, m_daily["completed"] / m_daily["sessions"], 0)
+    m_daily["cvr"]      = np.where(m_daily["sessions"]    > 0, m_daily["orders_actual"] / m_daily["sessions"], 0)
     m_daily["atc_rate"] = np.where(m_daily["sessions"]    > 0, m_daily["atc"] / m_daily["sessions"], 0)
-    m_daily["cpc"]      = np.where(m_daily["clicks"] > 0, m_daily["spend"] / m_daily["clicks"], 0)
-    m_daily["cpp"]      = np.where(m_daily["completed"] > 0, m_daily["spend"] / m_daily["completed"], 0)
+    m_daily["cpc"]      = np.where(m_daily["clicks"]      > 0, m_daily["spend"] / m_daily["clicks"], 0)
+    m_daily["cpp"]      = np.where(m_daily["orders_actual"] > 0, m_daily["spend"] / m_daily["orders_actual"], 0)
 
-    # Last day in primary range
-    last = m_daily[m_daily["date"].dt.date == pri_end]
-    if not last.empty:
-        last_row = last.iloc[0]
-        # Rolling-window comparisons for the latest day
-        prior = m_daily[m_daily["date"].dt.date < pri_end]
-        if len(prior) >= 7:
-            _rolling_check(prior["cvr"],      last_row["cvr"],      "CVR cliff (last day)")
-            _rolling_check(prior["ctr"],      last_row["ctr"],      "CTR drop (last day)")
-            _rolling_check(prior["atc_rate"], last_row["atc_rate"], "ATC rate drop (last day)")
-            _rolling_check(prior["cpc"],      last_row["cpc"],      "CPC spike (last day)", invert=True)
-            _rolling_check(prior["cpp"],      last_row["cpp"],      "Cost-per-order spike (last day)", invert=True)
+    # Determine the "latest complete day" — never use today as the comparison anchor
+    # (today's data is partial and would trigger false anomalies).
+    full_days = m_daily[m_daily["date"].dt.date < TODAY]
+    if not full_days.empty:
+        latest_complete = full_days["date"].max().date()
+        last = full_days[full_days["date"].dt.date == latest_complete]
+        if not last.empty and latest_complete >= pri_start and latest_complete <= pri_end:
+            last_row = last.iloc[0]
+            prior = full_days[full_days["date"].dt.date < latest_complete]
+            if len(prior) >= 7:
+                _rolling_check(prior["cvr"],      last_row["cvr"],      f"CVR cliff ({latest_complete:%d %b})")
+                _rolling_check(prior["ctr"],      last_row["ctr"],      f"CTR drop ({latest_complete:%d %b})")
+                _rolling_check(prior["atc_rate"], last_row["atc_rate"], f"ATC rate drop ({latest_complete:%d %b})")
+                _rolling_check(prior["cpc"],      last_row["cpc"],      f"CPC spike ({latest_complete:%d %b})", invert=True)
+                _rolling_check(prior["cpp"],      last_row["cpp"],      f"Cost-per-order spike ({latest_complete:%d %b})", invert=True)
 
-    # Spend with no orders day
-    bad_days = m_daily[(m_daily["spend"] > 100) & (m_daily["completed"] == 0)]
+    # Spend with no orders day (skip today — partial)
+    bad_days = full_days[(full_days["spend"] > 100) & (full_days["orders_actual"] == 0)] if not full_days.empty else pd.DataFrame()
     if len(bad_days) > 0:
         for _, r in bad_days.tail(3).iterrows():
             flags.append(("🟡", f"Spent **{fmt_usd(r['spend'])}** on **{r['date']:%d %b}** with zero orders"))
 
     # Sessions with no clicks tracked
-    sess_no_clicks = m_daily[(m_daily["sessions"] > 50) & (m_daily["clicks"] == 0)]
+    sess_no_clicks = full_days[(full_days["sessions"] > 50) & (full_days["clicks"] == 0)] if not full_days.empty else pd.DataFrame()
     if len(sess_no_clicks) > 0:
         flags.append(("🟡", f"{len(sess_no_clicks)} day(s) with sessions but no Meta clicks tracked — "
                             "could indicate Meta sync gap or organic-heavy traffic"))
 
-# Period-level checks
-if pri["spend"] > 0 and pri["completed"] == 0:
-    flags.append(("🔴", "Spend > $0 but **zero orders** in selected period — pixel or campaign broken"))
-if cmp_["cvr"] > 0 and pri["cvr"] < 0.7 * cmp_["cvr"]:
-    flags.append(("🔴", f"CVR is **{(1 - pri['cvr']/cmp_['cvr'])*100:.0f}% below** previous period "
-                        f"({_pct(pri['cvr'])} vs {_pct(cmp_['cvr'])})"))
+# Period-level checks — exclude today's partial data when range includes it
+def _agg_funnel_full_only(start: date, end: date) -> dict:
+    """Same as _agg_funnel but caps the end at yesterday (excludes partial today)."""
+    capped_end = min(end, TODAY - timedelta(days=1))
+    if capped_end < start:
+        return None
+    return _agg_funnel(start, capped_end)
+
+if range_includes_today:
+    pri_full = _agg_funnel_full_only(pri_start, pri_end)
+else:
+    pri_full = pri
+
+if pri_full is not None:
+    if pri_full["spend"] > 0 and pri_full["orders"] == 0:
+        flags.append(("🔴", "Spend > $0 but **zero orders** across full days in selected period — pixel/sync broken"))
+    if cmp_["cvr"] > 0 and pri_full["cvr"] < 0.7 * cmp_["cvr"]:
+        flags.append(("🔴", f"CVR is **{(1 - pri_full['cvr']/cmp_['cvr'])*100:.0f}% below** previous period "
+                            f"({_pct(pri_full['cvr'])} vs {_pct(cmp_['cvr'])}, excludes partial today)"))
 
 if not flags:
     st.success("✅ No anomalies detected against the rolling baseline.")
@@ -547,17 +629,19 @@ with st.expander("🔍 Day-level detail (export-ready)"):
     else:
         detail = m_daily[(m_daily["date"].dt.date >= pri_start) & (m_daily["date"].dt.date <= pri_end)].copy()
         detail["CTR %"]      = (np.where(detail["impressions"] > 0, detail["clicks"]/detail["impressions"]*100, 0)).round(2)
-        detail["CVR %"]      = (np.where(detail["sessions"]    > 0, detail["completed"]/detail["sessions"]*100, 0)).round(2)
+        detail["CVR %"]      = (np.where(detail["sessions"]    > 0, detail["orders_actual"]/detail["sessions"]*100, 0)).round(2)
         detail["ATC %"]      = (np.where(detail["sessions"]    > 0, detail["atc"]/detail["sessions"]*100, 0)).round(2)
-        detail["CPC $"]      = (np.where(detail["clicks"]    > 0, detail["spend"]/detail["clicks"], 0)).round(2)
-        detail["CPP $"]      = (np.where(detail["completed"] > 0, detail["spend"]/detail["completed"], 0)).round(2)
+        detail["CPC $"]      = (np.where(detail["clicks"]        > 0, detail["spend"]/detail["clicks"], 0)).round(2)
+        detail["CPP $"]      = (np.where(detail["orders_actual"] > 0, detail["spend"]/detail["orders_actual"], 0)).round(2)
+        detail["Note"]       = np.where(detail["date"].dt.date == TODAY, "today (partial)", "")
         detail["date"] = detail["date"].dt.strftime("%Y-%m-%d")
         detail = detail.rename(columns={
             "date":"Date","spend":"Spend $","clicks":"Clicks","impressions":"Impressions",
-            "sessions":"Sessions","atc":"ATCs","reached":"Checkout","completed":"Orders",
+            "sessions":"Sessions","atc":"ATCs","reached":"Checkout","completed":"Pixel Orders",
+            "orders_actual":"Orders",
         })
         cols = ["Date","Spend $","Impressions","Clicks","CTR %","CPC $",
-                "Sessions","ATCs","ATC %","Checkout","Orders","CVR %","CPP $"]
+                "Sessions","ATCs","ATC %","Checkout","Orders","CVR %","CPP $","Note"]
         st.dataframe(detail[cols], hide_index=True, use_container_width=True)
         st.download_button(
             "Download CSV",
@@ -567,5 +651,6 @@ with st.expander("🔍 Day-level detail (export-ready)"):
         )
 
 
-st.caption("All cost-per metrics use Meta spend; conversion metrics use Shopify pixel data. "
-           "Pixel undercounts vs Shopify-native by ~15–25% — interpret trends, not absolutes.")
+st.caption("**Orders & CVR** use authoritative sales (Recharge + Shopify ownership + Offline). "
+           "**Funnel rates** (ATC %, Checkout %) use Shopify pixel data — undercounts by ~15-25% vs Shopify-native, "
+           "but trends are reliable. Today's row is updated every 15 minutes by the live aggregator.")

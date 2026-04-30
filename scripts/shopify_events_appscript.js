@@ -30,6 +30,7 @@ const SUMMARY_TABS = {
 
 const SOURCE_TAB = "Sessions by Source - Daily";   // multi-market, written to MAIN sheet
 const PAGE_TAB   = "Top Landing Pages - Daily";    // multi-market, written to MAIN sheet
+const LIVE_TAB   = "Shopify Website - Live Today"; // 3 rows (one per market), overwritten by aggregateLive()
 
 const RAW_HEADERS = [
   "timestamp", "market", "source", "event_type",
@@ -186,6 +187,102 @@ function aggregateYesterday() {
   const dateStr    = Utilities.formatDate(yesterday, "Asia/Dubai", "dd/MM/yyyy");
   const datePrefix = Utilities.formatDate(yesterday, "Asia/Dubai", "yyyy-MM-dd");
   _aggregateDate(dateStr, datePrefix);
+}
+
+/**
+ * Aggregates TODAY's events so far and writes the result to the "Shopify
+ * Website - Live Today" tab in the main sheet (one row per market). The
+ * row is overwritten on each call so the tab always reflects "today as of now".
+ *
+ * Run on a 15-minute time-driven trigger.
+ */
+function aggregateLive() {
+  const now        = new Date();
+  const dateStr    = Utilities.formatDate(now, "Asia/Dubai", "dd/MM/yyyy");
+  const datePrefix = Utilities.formatDate(now, "Asia/Dubai", "yyyy-MM-dd");
+  const updatedAt  = Utilities.formatDate(now, "Asia/Dubai", "yyyy-MM-dd HH:mm");
+
+  const rawSheet = getRawSheet();
+  const data = rawSheet.getDataRange().getValues();
+  if (data.length < 2) return;
+
+  const headers = data[0];
+  const tsI    = headers.indexOf("timestamp");
+  const mktI   = headers.indexOf("market");
+  const evtI   = headers.indexOf("event_type");
+  const sidI   = headers.indexOf("session_id");
+
+  // Build seen-before set per market for new vs returning
+  const seenBefore = {};
+  MARKETS.forEach(m => { seenBefore[m] = new Set(); });
+  data.slice(1).forEach(r => {
+    const ts = String(r[tsI] || "");
+    if (ts.startsWith(datePrefix)) return;
+    const mkt = String(r[mktI] || "").trim().toUpperCase();
+    const sid = String(r[sidI] || "").trim();
+    if (mkt && sid && seenBefore[mkt]) seenBefore[mkt].add(sid);
+  });
+
+  const stats = {};
+  MARKETS.forEach(m => {
+    stats[m] = {
+      sessions: new Set(), new_sessions: new Set(), returning_sessions: new Set(),
+      add_to_cart: 0, reached_checkout: 0, completed_checkout: 0,
+    };
+  });
+
+  data.slice(1).forEach(r => {
+    const ts = String(r[tsI] || "");
+    if (!ts.startsWith(datePrefix)) return;
+    const mkt = String(r[mktI] || "").trim().toUpperCase();
+    if (!stats[mkt]) return;
+    const evt = String(r[evtI] || "").trim();
+    const sid = String(r[sidI] || "").trim();
+
+    if (evt === "page_viewed") {
+      if (sid) {
+        stats[mkt].sessions.add(sid);
+        if (seenBefore[mkt].has(sid)) stats[mkt].returning_sessions.add(sid);
+        else                          stats[mkt].new_sessions.add(sid);
+      }
+    } else if (evt === "product_added_to_cart") {
+      stats[mkt].add_to_cart++;
+    } else if (evt === "checkout_started") {
+      stats[mkt].reached_checkout++;
+    } else if (evt === "checkout_completed") {
+      stats[mkt].completed_checkout++;
+    }
+  });
+
+  // Overwrite the live tab from scratch
+  const ss = SpreadsheetApp.openById(MAIN_SHEET_ID);
+  let sheet = ss.getSheetByName(LIVE_TAB);
+  const liveHeaders = [
+    "date", "market", "sessions", "new_sessions", "returning_sessions",
+    "add_to_cart", "reached_checkout", "completed_checkout", "conversion_rate",
+    "updated_at",
+  ];
+  if (!sheet) {
+    sheet = ss.insertSheet(LIVE_TAB);
+  } else {
+    sheet.clear();
+  }
+  sheet.appendRow(liveHeaders);
+  sheet.setFrozenRows(1);
+
+  MARKETS.forEach(market => {
+    const s = stats[market];
+    const sessions = s.sessions.size;
+    const cvr = sessions > 0 ? (s.completed_checkout / sessions) : 0;
+    sheet.appendRow([
+      dateStr, market, sessions, s.new_sessions.size, s.returning_sessions.size,
+      s.add_to_cart, s.reached_checkout, s.completed_checkout,
+      (cvr * 100).toFixed(2) + "%",
+      updatedAt,
+    ]);
+  });
+
+  Logger.log(`Live aggregation written for ${dateStr} at ${updatedAt}.`);
 }
 
 function aggregateDate(ddmmyyyy) {
