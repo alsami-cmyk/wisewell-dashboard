@@ -296,7 +296,9 @@ def _classify_recharge_product(title: str) -> tuple[str | None, str | None]:
         return None, None
 
     # Machine subscriptions — regex matching
-    if re.search(r"model\s*1.*subscription", tl):
+    # USA Recharge uses "Wisewell Model 1" (no "Subscription" suffix), same as
+    # UAE/KSA use "Wisewell Nano Subscription" vs USA's "Wisewell Nano" for Nano Tank.
+    if re.search(r"model\s*1.*subscription", tl) or tl == "wisewell model 1":
         return "Machine", "Model 1"
     if re.search(r"nano\s*\+\s*subscription", tl):
         return "Machine", "Nano+"
