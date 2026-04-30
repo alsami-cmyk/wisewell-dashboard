@@ -56,6 +56,8 @@ RAW_TABS = [
     "Offline - Subscriptions", "Offline - Ownership", "Returns",
     "Marketing Spend",
     "Meta Ads Daily - Claude",
+    "Shopify Website - UAE", "Shopify Website - KSA", "Shopify Website - USA",
+    "Store Events - Live",
 ]
 # Historical (hardcoded) tabs — pre-Sep-2025 final truth
 HIST_TABS = ["Monthly Sales", "Monthly Cancellations", "Monthly User Base"]
@@ -703,6 +705,71 @@ def load_meta_ads_daily() -> pd.DataFrame:
     df["cpc_usd"]     = pd.to_numeric(df["cpc_usd"],     errors="coerce").fillna(0.0)
     df = df[df["date"].notna()].copy()
     return df.sort_values("date").reset_index(drop=True)
+
+
+# ── Shopify website analytics (exported from Shopify Analytics) ───────────────
+
+_SHOPIFY_WEBSITE_TABS = [
+    ("Shopify Website - UAE", "UAE"),
+    ("Shopify Website - KSA", "KSA"),
+    ("Shopify Website - USA", "USA"),
+]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_shopify_website_analytics() -> pd.DataFrame:
+    """
+    Daily funnel data exported from Shopify Analytics into
+    'Shopify Website - {market}' tabs.
+
+    Columns: date, market, sessions, add_to_cart, reached_checkout,
+             completed_checkout, conversion_rate (float 0-1)
+    """
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    records = []
+
+    for tab_name, market in _SHOPIFY_WEBSITE_TABS:
+        rows = raw_data.get(tab_name, [])
+        if len(rows) < 2:
+            continue
+        headers = [h.strip().lower() for h in rows[0]]
+        for row in rows[1:]:
+            if not row or not row[0].strip():
+                continue
+            padded = row + [""] * max(0, len(headers) - len(row))
+            d = dict(zip(headers, padded))
+
+            date_val = pd.to_datetime(d.get("day", ""), dayfirst=True, errors="coerce")
+            if pd.isna(date_val):
+                continue
+
+            def _int(key):
+                return int(float(d.get(key, 0) or 0))
+
+            cr_raw = str(d.get("conversion rate", "0")).replace("%", "").strip()
+            try:
+                cr = float(cr_raw) / 100
+            except ValueError:
+                cr = 0.0
+
+            records.append({
+                "date":                date_val,
+                "market":              market,
+                "sessions":            _int("sessions"),
+                "add_to_cart":         _int("sessions with cart additions"),
+                "reached_checkout":    _int("sessions that reached checkout"),
+                "completed_checkout":  _int("sessions that completed checkout"),
+                "conversion_rate":     cr,
+            })
+
+    if not records:
+        return pd.DataFrame(columns=[
+            "date", "market", "sessions", "add_to_cart",
+            "reached_checkout", "completed_checkout", "conversion_rate",
+        ])
+    return (pd.DataFrame(records)
+            .sort_values("date")
+            .reset_index(drop=True))
 
 
 # ── Shopify live events (Web Pixel + Webhooks → Google Sheets) ────────────────
