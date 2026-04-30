@@ -22,6 +22,14 @@ const MAIN_SHEET_ID = "1NjPJKswE2rXFnXsCah5Kv4tiSEi88jlGLnZwfHsp5o4";
 const RAW_TAB    = "Store Events - Live";
 const MARKETS    = ["UAE", "KSA", "USA"];
 
+// Each market's calendar boundary uses its own local timezone — so "today"
+// for USA rolls over at midnight Eastern, not midnight Dubai.
+const MARKET_TZ = {
+  UAE: "Asia/Dubai",
+  KSA: "Asia/Riyadh",        // same offset as Dubai but semantically correct
+  USA: "America/New_York",   // ET (handles DST automatically)
+};
+
 const SUMMARY_TABS = {
   UAE: "Shopify Website - UAE",
   KSA: "Shopify Website - KSA",
@@ -181,39 +189,53 @@ function classifyChannel(utm_source, utm_medium, referrer, fbclid, gclid) {
 // ── Nightly aggregation ────────────────────────────────────────────────────────
 
 /**
- * Run every 15 min via time-driven trigger. Aggregates TODAY's events so far
- * and upserts the result into the per-market summary tabs, plus the Sessions
- * by Source and Top Landing Pages tabs. Today's row updates in place; once
- * the day rolls over, that row stays as the last live snapshot.
+ * Run every 15 min. Aggregates each market's "today" in its OWN local
+ * timezone (UAE/KSA in Asia/Dubai, USA in America/New_York). The day
+ * boundary therefore follows local-midnight per market.
  */
 function aggregateToday() {
-  const now        = new Date();
-  const dateStr    = Utilities.formatDate(now, "Asia/Dubai", "dd/MM/yyyy");
-  const datePrefix = Utilities.formatDate(now, "Asia/Dubai", "yyyy-MM-dd");
-  _aggregateDate(dateStr, datePrefix);
+  const now = new Date();
+  const targetByMarket = {};
+  MARKETS.forEach(m => {
+    targetByMarket[m] = {
+      isoDate: Utilities.formatDate(now, MARKET_TZ[m], "yyyy-MM-dd"),
+      dateStr: Utilities.formatDate(now, MARKET_TZ[m], "dd/MM/yyyy"),
+    };
+  });
+  _aggregatePerMarket(targetByMarket);
 }
 
 /**
- * Run at 1am via time-driven trigger. Re-runs yesterday once more to catch
- * any 23:55-23:59 events that arrived after the last aggregateToday() call
- * before midnight. Idempotent — same upsert semantics.
+ * Run at 1am Dubai. Catches any late events for each market's local
+ * yesterday. Note: when this runs at 1am Dubai, USA's "yesterday" is
+ * the day that just ended at midnight ET ~9 hours earlier — that's
+ * the intended behaviour.
  */
 function aggregateYesterday() {
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  const dateStr    = Utilities.formatDate(yesterday, "Asia/Dubai", "dd/MM/yyyy");
-  const datePrefix = Utilities.formatDate(yesterday, "Asia/Dubai", "yyyy-MM-dd");
-  _aggregateDate(dateStr, datePrefix);
+  const yest = new Date();
+  yest.setDate(yest.getDate() - 1);
+  const targetByMarket = {};
+  MARKETS.forEach(m => {
+    targetByMarket[m] = {
+      isoDate: Utilities.formatDate(yest, MARKET_TZ[m], "yyyy-MM-dd"),
+      dateStr: Utilities.formatDate(yest, MARKET_TZ[m], "dd/MM/yyyy"),
+    };
+  });
+  _aggregatePerMarket(targetByMarket);
 }
 
 /**
- * Manual backfill — run from the editor.
- * Example: aggregateDate("27/04/2026")
+ * Manual backfill: aggregateDate("27/04/2026")
+ * Aggregates that calendar date for each market in its own local timezone.
  */
 function aggregateDate(ddmmyyyy) {
   const parts = ddmmyyyy.split("/");
-  const datePrefix = `${parts[2]}-${parts[1]}-${parts[0]}`;
-  _aggregateDate(ddmmyyyy, datePrefix);
+  const isoDate = `${parts[2]}-${parts[1]}-${parts[0]}`;
+  const targetByMarket = {};
+  MARKETS.forEach(m => {
+    targetByMarket[m] = { isoDate: isoDate, dateStr: ddmmyyyy };
+  });
+  _aggregatePerMarket(targetByMarket);
 }
 
 /** Delete all existing rows in `sheet` whose column-A value matches `dateStr`. */
@@ -227,7 +249,13 @@ function _deleteRowsForDate(sheet, dateStr) {
   }
 }
 
-function _aggregateDate(dateStr, datePrefix) {
+/**
+ * Aggregate per-market events using each market's own local-timezone date.
+ * targetByMarket: { UAE: {isoDate, dateStr}, KSA: {...}, USA: {...} }
+ *   isoDate — yyyy-MM-dd in market's local TZ (used to bucket events)
+ *   dateStr — dd/MM/yyyy in market's local TZ (used for the output row's date column)
+ */
+function _aggregatePerMarket(targetByMarket) {
   const rawSheet = getRawSheet();
   const data = rawSheet.getDataRange().getValues();
   if (data.length < 2) { Logger.log("No raw events."); return; }
@@ -246,16 +274,28 @@ function _aggregateDate(dateStr, datePrefix) {
   const fbI    = idx("fbclid");
   const gcI    = idx("gclid");
 
-  // Build set of clientIds seen BEFORE today across the raw sheet (for new vs returning)
+  // Helper — convert UTC ISO timestamp to its local-date in the market's TZ
+  function eventLocalIso(ts, mkt) {
+    if (!ts) return "";
+    try {
+      return Utilities.formatDate(new Date(ts), MARKET_TZ[mkt], "yyyy-MM-dd");
+    } catch (e) {
+      return "";
+    }
+  }
+
+  // Build set of clientIds seen BEFORE the target day in each market's local TZ
   const seenBefore = {};
   MARKETS.forEach(m => { seenBefore[m] = new Set(); });
   data.slice(1).forEach(r => {
-    const ts = String(r[tsI] || "");
-    if (ts.startsWith(datePrefix)) return;
-    if (ts > datePrefix) return;
     const mkt = String(r[mktI] || "").trim().toUpperCase();
+    if (!seenBefore[mkt]) return;
+    const ts = String(r[tsI] || "");
+    const eventIso = eventLocalIso(ts, mkt);
+    if (!eventIso) return;
+    if (eventIso >= targetByMarket[mkt].isoDate) return;  // same day or future — skip for "before"
     const sid = String(r[sidI] || "").trim();
-    if (mkt && sid && seenBefore[mkt]) seenBefore[mkt].add(sid);
+    if (sid) seenBefore[mkt].add(sid);
   });
 
   // Per-market summary stats
@@ -280,10 +320,11 @@ function _aggregateDate(dateStr, datePrefix) {
   MARKETS.forEach(m => { pageStats[m] = {}; });
 
   data.slice(1).forEach(r => {
-    const ts  = String(r[tsI] || "");
-    if (!ts.startsWith(datePrefix)) return;
     const mkt = String(r[mktI] || "").trim().toUpperCase();
     if (!summary[mkt]) return;
+    const ts  = String(r[tsI] || "");
+    const eventIso = eventLocalIso(ts, mkt);
+    if (eventIso !== targetByMarket[mkt].isoDate) return;
     const evt = String(r[evtI] || "").trim();
     const sid = String(r[sidI] || "").trim();
 
@@ -309,7 +350,6 @@ function _aggregateDate(dateStr, datePrefix) {
 
     } else if (evt === "product_added_to_cart") {
       summary[mkt].add_to_cart++;
-      // Increment ATC on the most recent page seen by this session — best effort: skip
     } else if (evt === "checkout_started") {
       summary[mkt].reached_checkout++;
     } else if (evt === "checkout_completed") {
@@ -335,10 +375,11 @@ function _aggregateDate(dateStr, datePrefix) {
 
   // Approximate ATC/reached/completed by source — attribute to session's source
   data.slice(1).forEach(r => {
-    const ts  = String(r[tsI] || "");
-    if (!ts.startsWith(datePrefix)) return;
     const mkt = String(r[mktI] || "").trim().toUpperCase();
     if (!sourceStats[mkt]) return;
+    const ts = String(r[tsI] || "");
+    const eventIso = eventLocalIso(ts, mkt);
+    if (eventIso !== targetByMarket[mkt].isoDate) return;
     const evt = String(r[evtI] || "").trim();
     const sid = String(r[sidI] || "").trim();
     if (!sid) return;
@@ -352,12 +393,13 @@ function _aggregateDate(dateStr, datePrefix) {
     else if (evt === "checkout_completed") bucket.completed++;
   });
 
-  // ── UPSERT: Per-market daily summary (delete today's row, then append fresh) ──
+  // ── UPSERT: Per-market daily summary — each market uses its own dateStr ──
   MARKETS.forEach(market => {
     const s = summary[market];
     const sessions = s.sessions.size;
     const cvr = sessions > 0 ? (s.completed_checkout / sessions) : 0;
     const cvrPct = (cvr * 100).toFixed(2) + "%";
+    const dateStr = targetByMarket[market].dateStr;
 
     const sheet = getSummarySheet(market);
     _deleteRowsForDate(sheet, dateStr);
@@ -367,32 +409,49 @@ function _aggregateDate(dateStr, datePrefix) {
     ]);
   });
 
-  // ── UPSERT: Sessions by Source - Daily ──
+  // ── UPSERT: Sessions by Source - Daily — delete each market's date rows ──
   const sourceSheet = getMainTab(SOURCE_TAB, SOURCE_HEADERS);
-  _deleteRowsForDate(sourceSheet, dateStr);
+  // Delete rows where (date, market) match any of the targets
+  _deleteRowsForDateMarketPairs(sourceSheet,
+    MARKETS.map(m => ({ date: targetByMarket[m].dateStr, market: m })));
   MARKETS.forEach(market => {
     Object.values(sourceStats[market])
       .sort((a, b) => b.sessions - a.sessions)
       .forEach(row => {
         sourceSheet.appendRow([
-          dateStr, market, row.channel, row.utm_source, row.utm_campaign,
+          targetByMarket[market].dateStr, market, row.channel,
+          row.utm_source, row.utm_campaign,
           row.sessions, row.atc, row.reached, row.completed,
         ]);
       });
   });
 
-  // ── UPSERT: Top Landing Pages - Daily (top 10 per market) ──
+  // ── UPSERT: Top Landing Pages - Daily ──
   const pageSheet = getMainTab(PAGE_TAB, PAGE_HEADERS);
-  _deleteRowsForDate(pageSheet, dateStr);
+  _deleteRowsForDateMarketPairs(pageSheet,
+    MARKETS.map(m => ({ date: targetByMarket[m].dateStr, market: m })));
   MARKETS.forEach(market => {
     const pages = Object.entries(pageStats[market])
       .map(([pg, s]) => ({ page: pg, sessions: s.sessions.size, atc: s.atc }))
       .sort((a, b) => b.sessions - a.sessions)
       .slice(0, 10);
     pages.forEach(p => {
-      pageSheet.appendRow([dateStr, market, p.page, p.sessions, p.atc]);
+      pageSheet.appendRow([targetByMarket[market].dateStr, market, p.page, p.sessions, p.atc]);
     });
   });
 
-  Logger.log("Upserted " + dateStr + " across summary + source + pages tabs.");
+  Logger.log("Upserted per-market dates: " +
+             MARKETS.map(m => `${m}=${targetByMarket[m].dateStr}`).join(", "));
+}
+
+/** Delete rows where column A == date AND column B == market for any pair in `pairs`. */
+function _deleteRowsForDateMarketPairs(sheet, pairs) {
+  const data = sheet.getDataRange().getValues();
+  const set = new Set(pairs.map(p => `${p.date}||${p.market}`));
+  for (let i = data.length - 1; i >= 1; i--) {
+    const key = `${String(data[i][0]).trim()}||${String(data[i][1]).trim().toUpperCase()}`;
+    if (set.has(key)) {
+      sheet.deleteRow(i + 1);
+    }
+  }
 }
