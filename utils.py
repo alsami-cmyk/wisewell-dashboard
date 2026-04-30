@@ -56,7 +56,10 @@ RAW_TABS = [
     "Offline - Subscriptions", "Offline - Ownership", "Returns",
     "Marketing Spend",
     "Meta Ads Daily - Claude",
+    "Meta Ads Campaign Daily - Claude",
     "Shopify Website - UAE", "Shopify Website - KSA", "Shopify Website - USA",
+    "Sessions by Source - Daily",
+    "Top Landing Pages - Daily",
 ]
 # Historical (hardcoded) tabs — pre-Sep-2025 final truth
 HIST_TABS = ["Monthly Sales", "Monthly Cancellations", "Monthly User Base"]
@@ -761,20 +764,105 @@ def load_shopify_website_analytics() -> pd.DataFrame:
                 "date":                date_val,
                 "market":              market,
                 "sessions":            _int("sessions"),
+                "new_sessions":        _int("new_sessions"),
+                "returning_sessions":  _int("returning_sessions"),
                 "add_to_cart":         _int("add_to_cart", "sessions with cart additions"),
                 "reached_checkout":    _int("reached_checkout", "sessions that reached checkout"),
                 "completed_checkout":  _int("completed_checkout", "sessions that completed checkout"),
                 "conversion_rate":     cr,
             })
 
+    cols = ["date", "market", "sessions", "new_sessions", "returning_sessions",
+            "add_to_cart", "reached_checkout", "completed_checkout", "conversion_rate"]
     if not records:
-        return pd.DataFrame(columns=[
-            "date", "market", "sessions", "add_to_cart",
-            "reached_checkout", "completed_checkout", "conversion_rate",
-        ])
+        return pd.DataFrame(columns=cols)
     return (pd.DataFrame(records)
             .sort_values("date")
             .reset_index(drop=True))
+
+
+# ── Meta Ads campaign-level daily ─────────────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_meta_ads_campaign_daily() -> pd.DataFrame:
+    """
+    Campaign-level Meta Ads data from 'Meta Ads Campaign Daily - Claude'.
+    Returns: date, market, campaign_id, campaign_name, objective, status,
+             spend_usd, clicks, impressions, ctr_pct, cpc_usd, cpm_usd
+    """
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    rows = raw_data.get("Meta Ads Campaign Daily - Claude", [])
+    cols = ["date", "market", "campaign_id", "campaign_name", "objective", "status",
+            "spend_usd", "clicks", "impressions", "ctr_pct", "cpc_usd", "cpm_usd"]
+    if len(rows) < 2:
+        return pd.DataFrame(columns=cols)
+
+    df = pd.DataFrame(rows[1:], columns=[h.strip() for h in rows[0]])
+    rename = {
+        "Date": "date", "Market": "market",
+        "Campaign ID": "campaign_id", "Campaign Name": "campaign_name",
+        "Objective": "objective", "Status": "status",
+        "Spend (USD)": "spend_usd", "Clicks": "clicks",
+        "Impressions": "impressions", "CTR (%)": "ctr_pct",
+        "CPC (USD)": "cpc_usd", "CPM (USD)": "cpm_usd",
+    }
+    df = df.rename(columns=rename)
+    df["date"]        = pd.to_datetime(df["date"], errors="coerce")
+    df["spend_usd"]   = pd.to_numeric(df["spend_usd"],   errors="coerce").fillna(0.0)
+    df["clicks"]      = pd.to_numeric(df["clicks"],      errors="coerce").fillna(0).astype(int)
+    df["impressions"] = pd.to_numeric(df["impressions"], errors="coerce").fillna(0).astype(int)
+    df["ctr_pct"]     = pd.to_numeric(df["ctr_pct"],     errors="coerce").fillna(0.0)
+    df["cpc_usd"]     = pd.to_numeric(df["cpc_usd"],     errors="coerce").fillna(0.0)
+    df["cpm_usd"]     = pd.to_numeric(df["cpm_usd"],     errors="coerce").fillna(0.0)
+    df = df[df["date"].notna()].copy()
+    return df.sort_values(["date", "market", "campaign_name"]).reset_index(drop=True)
+
+
+# ── Sessions attributed by traffic source ─────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_sessions_by_source() -> pd.DataFrame:
+    """
+    Daily sessions broken down by channel / utm_source / utm_campaign.
+    Source: 'Sessions by Source - Daily' tab written by the Apps Script.
+    Returns: date, market, channel, utm_source, utm_campaign,
+             sessions, add_to_cart, reached_checkout, completed_checkout
+    """
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    rows = raw_data.get("Sessions by Source - Daily", [])
+    cols = ["date", "market", "channel", "utm_source", "utm_campaign",
+            "sessions", "add_to_cart", "reached_checkout", "completed_checkout"]
+    if len(rows) < 2:
+        return pd.DataFrame(columns=cols)
+
+    df = pd.DataFrame(rows[1:], columns=[h.strip().lower() for h in rows[0]])
+    df["date"] = pd.to_datetime(df.get("date", ""), dayfirst=True, errors="coerce")
+    for c in ("sessions", "add_to_cart", "reached_checkout", "completed_checkout"):
+        df[c] = pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0).astype(int)
+    df = df[df["date"].notna()].copy()
+    return df.sort_values(["date", "market", "sessions"], ascending=[True, True, False]).reset_index(drop=True)
+
+
+# ── Top landing pages ─────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_top_landing_pages() -> pd.DataFrame:
+    """
+    Top 10 landing pages per market per day.
+    Returns: date, market, page_path, sessions, add_to_cart
+    """
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    rows = raw_data.get("Top Landing Pages - Daily", [])
+    cols = ["date", "market", "page_path", "sessions", "add_to_cart"]
+    if len(rows) < 2:
+        return pd.DataFrame(columns=cols)
+
+    df = pd.DataFrame(rows[1:], columns=[h.strip().lower() for h in rows[0]])
+    df["date"] = pd.to_datetime(df.get("date", ""), dayfirst=True, errors="coerce")
+    for c in ("sessions", "add_to_cart"):
+        df[c] = pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0).astype(int)
+    df = df[df["date"].notna()].copy()
+    return df.sort_values(["date", "market", "sessions"], ascending=[True, True, False]).reset_index(drop=True)
 
 
 

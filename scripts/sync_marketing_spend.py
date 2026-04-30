@@ -73,8 +73,9 @@ DEFAULT_SHEET_ID    = "1NjPJKswE2rXFnXsCah5Kv4tiSEi88jlGLnZwfHsp5o4"
 DEFAULT_SPEND_TAB   = "Marketing Spend - Claude"
 DEFAULT_PERF_TAB    = "Meta Ads - Claude"
 DEFAULT_DAILY_TAB   = "Meta Ads Daily - Claude"
+DEFAULT_CAMPAIGN_TAB = "Meta Ads Campaign Daily - Claude"
 
-DAILY_LOOKBACK_DAYS = 90  # how many days of daily data to keep
+DAILY_LOOKBACK_DAYS = 90
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -102,6 +103,11 @@ PERF_HEADER: list[str] = [
 DAILY_HEADER: list[str] = [
     "Date", "Market",
     "Spend (USD)", "Clicks", "Impressions", "CTR (%)", "CPC (USD)",
+]
+
+CAMPAIGN_HEADER: list[str] = [
+    "Date", "Market", "Campaign ID", "Campaign Name", "Objective", "Status",
+    "Spend (USD)", "Clicks", "Impressions", "CTR (%)", "CPC (USD)", "CPM (USD)",
 ]
 
 logging.basicConfig(
@@ -258,6 +264,72 @@ def get_daily_insights(account_id: str, token: str) -> dict[str, dict]:
     return out
 
 
+def get_daily_campaign_insights(account_id: str, token: str, lookback_days: int = 90) -> list[dict]:
+    """
+    Returns list of campaign-day rows:
+      [{date, campaign_id, campaign_name, objective, status,
+        spend, clicks, impressions, ctr_pct, cpc, cpm}, ...]
+    in account currency (caller converts).
+    """
+    out: list[dict] = []
+    url: str | None = f"{META_GRAPH}/{account_id}/insights"
+    params: dict[str, Any] | None = {
+        "level":          "campaign",
+        "fields":         "campaign_id,campaign_name,spend,clicks,impressions,ctr,cpc,cpm,objective",
+        "time_increment": "1",
+        "date_preset":    "last_90d" if lookback_days <= 90 else "maximum",
+        "limit":          500,
+        "access_token":   token,
+    }
+
+    # Build campaign-status lookup once per account (status not available on insights)
+    status_map: dict[str, str] = {}
+    try:
+        cur_url: str | None = f"{META_GRAPH}/{account_id}/campaigns"
+        cur_params: dict[str, Any] | None = {
+            "fields":       "id,status",
+            "limit":        500,
+            "access_token": token,
+        }
+        while cur_url:
+            r = requests.get(cur_url, params=cur_params, timeout=30)
+            r.raise_for_status()
+            body = r.json()
+            for c in body.get("data", []):
+                status_map[c["id"]] = c.get("status", "")
+            cur_url    = body.get("paging", {}).get("next")
+            cur_params = None
+    except Exception as e:
+        log.warning("Campaign status lookup failed for %s: %s", account_id, e)
+
+    while url:
+        resp = requests.get(url, params=params, timeout=60)
+        resp.raise_for_status()
+        body = resp.json()
+        for row in body.get("data", []):
+            date_str = (row.get("date_start") or "")[:10]
+            if not date_str:
+                continue
+            cid = row.get("campaign_id", "")
+            out.append({
+                "date":          date_str,
+                "campaign_id":   cid,
+                "campaign_name": row.get("campaign_name", ""),
+                "objective":     row.get("objective", ""),
+                "status":        status_map.get(cid, ""),
+                "spend":         float(row.get("spend",       0) or 0),
+                "clicks":        int  (row.get("clicks",      0) or 0),
+                "impressions":   int  (row.get("impressions", 0) or 0),
+                "ctr_pct":       float(row.get("ctr",         0) or 0),
+                "cpc":           float(row.get("cpc",         0) or 0),
+                "cpm":           float(row.get("cpm",         0) or 0),
+            })
+        url    = body.get("paging", {}).get("next")
+        params = None
+
+    return out
+
+
 # ── Sheets helpers ────────────────────────────────────────────────────────────
 def _build_sheets_svc(sa_json: str):
     info  = json.loads(sa_json) if isinstance(sa_json, str) else sa_json
@@ -361,6 +433,39 @@ def write_perf_tab(
     log.info("Performance tab '%s': wrote %d rows.", tab_name, len(rows))
 
 
+def write_campaign_tab(
+    svc,
+    sheet_id: str,
+    tab_name: str,
+    rows: list[list],
+) -> None:
+    """Write the campaign-level daily performance tab."""
+    sheet_inner_id = _ensure_tab(svc, sheet_id, tab_name)
+
+    svc.spreadsheets().values().clear(
+        spreadsheetId=sheet_id, range=f"'{tab_name}'"
+    ).execute()
+
+    svc.spreadsheets().values().update(
+        spreadsheetId=sheet_id,
+        range=f"'{tab_name}'!A1",
+        valueInputOption="USER_ENTERED",
+        body={"values": [CAMPAIGN_HEADER] + rows},
+    ).execute()
+
+    svc.spreadsheets().batchUpdate(
+        spreadsheetId=sheet_id,
+        body={"requests": [{
+            "repeatCell": {
+                "range": {"sheetId": sheet_inner_id, "startRowIndex": 0, "endRowIndex": 1},
+                "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+                "fields": "userEnteredFormat.textFormat.bold",
+            }
+        }]},
+    ).execute()
+    log.info("Campaign tab '%s': wrote %d rows.", tab_name, len(rows))
+
+
 def write_daily_tab(
     svc,
     sheet_id: str,
@@ -415,6 +520,7 @@ def main() -> int:
     spend_tab    = os.environ.get("TAB_NAME",         DEFAULT_SPEND_TAB)
     perf_tab     = os.environ.get("PERF_TAB_NAME",    DEFAULT_PERF_TAB)
     daily_tab    = os.environ.get("DAILY_TAB_NAME",   DEFAULT_DAILY_TAB)
+    campaign_tab = os.environ.get("CAMPAIGN_TAB_NAME", DEFAULT_CAMPAIGN_TAB)
     sa_json      = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
     if not sa_json:
         log.error("Missing required env var: GOOGLE_SERVICE_ACCOUNT")
@@ -434,9 +540,10 @@ def main() -> int:
         currencies[market] = cur
         log.info("Meta %s billing currency: %s", market, cur)
 
-    # ── Step 2: pull monthly + daily insights per account ──
+    # ── Step 2: pull monthly + daily + campaign insights per account ──
     insights_by_market: dict[str, dict[str, dict]] = {}
     daily_by_market:    dict[str, dict[str, dict]] = {}
+    campaigns_by_market: dict[str, list[dict]]      = {}
     for market, acc in accounts.items():
         rate = USD_RATES[currencies[market]]
         try:
@@ -461,6 +568,18 @@ def main() -> int:
         except requests.HTTPError as e:
             log.error("Daily insights failed for %s (%s): %s", market, acc, e)
             daily_by_market[market] = {}
+
+        try:
+            camps = get_daily_campaign_insights(acc, token, lookback_days=DAILY_LOOKBACK_DAYS)
+            for c in camps:
+                c["spend_usd"] = round(c["spend"] * rate, 2)
+                c["cpc_usd"]   = round(c["cpc"]   * rate, 4)
+                c["cpm_usd"]   = round(c["cpm"]   * rate, 4)
+            campaigns_by_market[market] = camps
+            log.info("Meta %s: %d campaign-day rows", market, len(camps))
+        except requests.HTTPError as e:
+            log.error("Campaign insights failed for %s (%s): %s", market, acc, e)
+            campaigns_by_market[market] = []
 
     # ── Step 3: union of all months ──
     months: set[str] = set()
@@ -532,12 +651,24 @@ def main() -> int:
                 m["cpc_usd"],
             ])
 
-    # ── Step 7: write all three tabs ──
+    # ── Step 6b: build campaign tab rows ──
+    campaign_rows: list[list] = []
+    for market in ("UAE", "KSA", "USA"):
+        for c in sorted(campaigns_by_market.get(market, []), key=lambda x: (x["date"], x["campaign_name"])):
+            campaign_rows.append([
+                c["date"], market, c["campaign_id"], c["campaign_name"],
+                c["objective"], c["status"],
+                c["spend_usd"], c["clicks"], c["impressions"],
+                round(c["ctr_pct"], 4), c["cpc_usd"], c["cpm_usd"],
+            ])
+
+    # ── Step 7: write all four tabs ──
     try:
         svc = _build_sheets_svc(sa_json)
-        write_spend_tab(svc, sheet_id, spend_tab,  spend_rows)
-        write_perf_tab( svc, sheet_id, perf_tab,   perf_rows)
-        write_daily_tab(svc, sheet_id, daily_tab,  daily_rows)
+        write_spend_tab(svc,    sheet_id, spend_tab,    spend_rows)
+        write_perf_tab( svc,    sheet_id, perf_tab,     perf_rows)
+        write_daily_tab(svc,    sheet_id, daily_tab,    daily_rows)
+        write_campaign_tab(svc, sheet_id, campaign_tab, campaign_rows)
     except HttpError as e:
         log.error("Sheets API write failed: %s", e)
         return 3
