@@ -757,31 +757,53 @@ def _shopify_graphql(store: str, token: str, query: str) -> dict:
     return r.json()
 
 
+def _shopify_analyticsql(store: str, token: str, ql: str) -> dict:
+    """
+    Run a ShopifyQL analyticsReport query and return {header: value} for the
+    first (summary) row.  Returns {} on any error without raising.
+    """
+    gql_query = '{ analyticsReport(query: "' + ql.replace('"', '\\"') + '") { result { headers rowData } } }'
+    try:
+        gql = _shopify_graphql(store, token, gql_query)
+        errors = gql.get("errors") or []
+        if errors:
+            logger.info("ShopifyQL error for %s: %s", store, errors)
+            return {}
+        result   = gql.get("data", {}).get("analyticsReport", {}).get("result", {})
+        headers  = result.get("headers", [])
+        row_data = result.get("rowData", [])
+        if not headers or not row_data:
+            return {}
+        h = {v.lower(): i for i, v in enumerate(headers)}
+        return {k: row_data[0][i] for k, i in h.items()}
+    except Exception as exc:
+        logger.info("ShopifyQL failed for %s: %s", store, exc)
+        return {}
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_shopify_store_analytics() -> pd.DataFrame:
     """
     Online store performance metrics (MTD) from all configured Shopify stores.
 
-    Always available (all plans, requires read_orders scope):
-        orders (int)          — Shopify orders placed MTD
-        revenue_local (float) — gross revenue in local currency
-        aov_local (float)     — average order value in local currency
+    Always available (read_orders scope):
+        orders, revenue_local, aov_local, abandoned_checkouts
 
-    Requires Shopify Advanced / Plus + read_analytics scope (ShopifyQL):
-        sessions (int)          — store sessions MTD
-        conversion_rate (float) — sessions → orders rate
+    Requires read_analytics scope (ShopifyQL — Advanced/Plus plans):
+        sessions, added_to_cart, reached_checkout, completed_checkout,
+        conversion_rate, bounce_rate
 
-    Returns columns:
-        market, orders, revenue_local, aov_local, sessions, conversion_rate,
-        configured, missing_scopes (list[str]), sessions_unavailable_reason (str)
+    Returns one row per market with all columns; None = data unavailable.
     """
     creds = _shopify_creds()
+    empty_cols = [
+        "market", "configured", "missing_scopes",
+        "orders", "revenue_local", "aov_local", "abandoned_checkouts",
+        "sessions", "added_to_cart", "reached_checkout", "completed_checkout",
+        "conversion_rate", "bounce_rate", "analytics_note",
+    ]
     if not creds:
-        return pd.DataFrame(columns=[
-            "market", "orders", "revenue_local", "aov_local",
-            "sessions", "conversion_rate", "configured",
-            "missing_scopes", "sessions_unavailable_reason",
-        ])
+        return pd.DataFrame(columns=empty_cols)
 
     today       = pd.Timestamp.today()
     m_start     = today.replace(day=1)
@@ -792,100 +814,93 @@ def load_shopify_store_analytics() -> pd.DataFrame:
 
     records = []
     for market, store, token in creds:
-        rec: dict = {
-            "market": market, "orders": 0, "revenue_local": 0.0, "aov_local": 0.0,
-            "sessions": None, "conversion_rate": None, "configured": True,
-            "missing_scopes": [], "sessions_unavailable_reason": "",
-        }
+        rec: dict = {k: None for k in empty_cols}
+        rec.update({"market": market, "configured": True, "missing_scopes": [],
+                    "orders": 0, "revenue_local": 0.0, "aov_local": 0.0,
+                    "abandoned_checkouts": 0, "analytics_note": ""})
 
-        # ── Check granted scopes first ────────────────────────────────────────
+        # ── Scope check ───────────────────────────────────────────────────────
         try:
-            scope_resp   = _shopify_rest(store, token, "access_scopes.json")
-            granted      = {s.get("handle", "") for s in scope_resp.get("access_scopes", [])}
-            missing      = []
-            if "read_orders" not in granted:
-                missing.append("read_orders")
-            if "read_analytics" not in granted:
-                missing.append("read_analytics")
+            scope_resp = _shopify_rest(store, token, "access_scopes.json")
+            granted    = {s.get("handle", "") for s in scope_resp.get("access_scopes", [])}
+            missing    = [s for s in ("read_orders", "read_analytics", "read_checkouts")
+                          if s not in granted]
             rec["missing_scopes"] = missing
             if missing:
-                logger.warning(
-                    "Shopify %s token missing scopes: %s. "
-                    "Re-install the custom app after adding these scopes.",
-                    market, missing,
-                )
-        except Exception as scope_err:
-            logger.info("Could not fetch scopes for %s: %s", market, scope_err)
+                logger.warning("Shopify %s missing scopes: %s", market, missing)
+        except Exception as e:
+            logger.info("Scope check failed for %s: %s", market, e)
 
         try:
-            # ── Orders count MTD ──────────────────────────────────────────────
-            cnt = _shopify_rest(store, token, "orders/count.json", {
-                "status": "any",
-                "created_at_min": m_start_str,
-                "created_at_max": today_str,
-            })
-            # Shopify returns {"errors":...} (HTTP 200) when scope is missing
-            if "errors" in cnt:
-                logger.warning("Shopify orders/count for %s returned errors: %s", market, cnt["errors"])
-            else:
+            # ── Orders (count + revenue) ──────────────────────────────────────
+            cnt = _shopify_rest(store, token, "orders/count.json",
+                                {"status": "any", "created_at_min": m_start_str,
+                                 "created_at_max": today_str})
+            if "errors" not in cnt:
                 rec["orders"] = int(cnt.get("count", 0))
 
-            # ── Revenue + AOV (first 250 orders; enough for monthly view) ─────
-            ords = _shopify_rest(store, token, "orders.json", {
-                "status": "any",
-                "created_at_min": m_start_str,
-                "created_at_max": today_str,
-                "fields": "id,total_price",
-                "limit": 250,
-            })
-            order_list       = ords.get("orders", [])
-            total_rev        = sum(float(o.get("total_price", 0)) for o in order_list)
+            ords = _shopify_rest(store, token, "orders.json",
+                                 {"status": "any", "created_at_min": m_start_str,
+                                  "created_at_max": today_str,
+                                  "fields": "id,total_price", "limit": 250})
+            order_list = ords.get("orders", [])
+            total_rev  = sum(float(o.get("total_price", 0)) for o in order_list)
             rec["revenue_local"] = total_rev
             rec["aov_local"]     = total_rev / len(order_list) if order_list else 0.0
 
-            # ── Sessions + conversion via ShopifyQL (Advanced / Plus only) ────
+            # ── Abandoned checkouts ───────────────────────────────────────────
             try:
-                ql_query = (
-                    "{ analyticsReport(query: "
-                    '"SHOW sessions, conversion_rate FROM sessions '
-                    f"SINCE {since_ql} UNTIL {until_ql}"
-                    '") { result { headers rowData } } }'
+                ab = _shopify_rest(store, token, "checkouts/count.json",
+                                   {"created_at_min": m_start_str,
+                                    "created_at_max": today_str})
+                if "errors" not in ab:
+                    rec["abandoned_checkouts"] = int(ab.get("count", 0))
+            except Exception:
+                pass
+
+            # ── Full funnel via ShopifyQL ─────────────────────────────────────
+            # Primary attempt: session funnel (Advanced / Plus)
+            funnel_row = _shopify_analyticsql(
+                store, token,
+                f"SHOW sessions, added_to_cart_sessions, reached_checkout_sessions, "
+                f"sessions_converted, conversion_rate, bounce_rate FROM sessions "
+                f"SINCE {since_ql} UNTIL {until_ql}",
+            )
+            if funnel_row:
+                def _int(k):
+                    v = funnel_row.get(k)
+                    return int(float(v)) if v not in (None, "") else None
+
+                def _pct(k):
+                    v = funnel_row.get(k)
+                    if v in (None, ""):
+                        return None
+                    f = float(v)
+                    return f / 100 if f > 1 else f
+
+                rec["sessions"]           = _int("sessions")
+                rec["added_to_cart"]      = _int("added_to_cart_sessions")
+                rec["reached_checkout"]   = _int("reached_checkout_sessions")
+                rec["completed_checkout"] = _int("sessions_converted")
+                rec["conversion_rate"]    = _pct("conversion_rate")
+                rec["bounce_rate"]        = _pct("bounce_rate")
+            else:
+                # Fallback: basic sessions + conversion only
+                basic = _shopify_analyticsql(
+                    store, token,
+                    f"SHOW sessions, conversion_rate FROM sessions "
+                    f"SINCE {since_ql} UNTIL {until_ql}",
                 )
-                gql    = _shopify_graphql(store, token, ql_query)
-                # Surface any GraphQL errors
-                gql_errors = gql.get("errors") or []
-                if gql_errors:
-                    reason = "; ".join(
-                        e.get("message", str(e)) for e in gql_errors
-                    )
-                    rec["sessions_unavailable_reason"] = reason
-                    logger.info("ShopifyQL errors for %s: %s", market, reason)
+                if basic:
+                    v = basic.get("sessions")
+                    rec["sessions"] = int(float(v)) if v not in (None, "") else None
+                    cr = basic.get("conversion_rate")
+                    if cr not in (None, ""):
+                        f = float(cr)
+                        rec["conversion_rate"] = f / 100 if f > 1 else f
+                    rec["analytics_note"] = "Funnel detail unavailable — plan may not support ShopifyQL funnel metrics"
                 else:
-                    result = (
-                        gql.get("data", {})
-                        .get("analyticsReport", {})
-                        .get("result", {})
-                    )
-                    headers  = result.get("headers", [])
-                    row_data = result.get("rowData", [])
-                    if headers and row_data:
-                        h   = {v.lower(): i for i, v in enumerate(headers)}
-                        row = row_data[0]
-                        if "sessions" in h:
-                            rec["sessions"] = int(float(row[h["sessions"]]))
-                        if "conversion_rate" in h:
-                            cr = float(row[h["conversion_rate"]])
-                            # Shopify returns e.g. 3.2 (meaning 3.2%) — normalise to 0–1
-                            rec["conversion_rate"] = cr / 100 if cr > 1 else cr
-                    else:
-                        rec["sessions_unavailable_reason"] = "No data returned by ShopifyQL"
-            except Exception as gql_err:
-                reason = str(gql_err)
-                rec["sessions_unavailable_reason"] = reason
-                logger.info(
-                    "ShopifyQL sessions not available for %s (%s) — order data only.",
-                    market, reason,
-                )
+                    rec["analytics_note"] = "Analytics unavailable — requires read_analytics scope + Advanced/Plus plan"
 
         except Exception as exc:
             logger.warning("Shopify REST failed for %s: %s", market, exc)
@@ -894,6 +909,74 @@ def load_shopify_store_analytics() -> pd.DataFrame:
         records.append(rec)
 
     return pd.DataFrame(records)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_shopify_funnel_daily(days: int = 30) -> pd.DataFrame:
+    """
+    Daily funnel breakdown for the last `days` days across all configured stores.
+
+    Returns: date (Timestamp), market, sessions, added_to_cart,
+             reached_checkout, completed_checkout, conversion_rate
+    Rows only present where ShopifyQL returns data.
+    """
+    creds = _shopify_creds()
+    empty = pd.DataFrame(columns=[
+        "date", "market", "sessions", "added_to_cart",
+        "reached_checkout", "completed_checkout", "conversion_rate",
+    ])
+    if not creds:
+        return empty
+
+    until_dt  = pd.Timestamp.today().normalize()
+    since_dt  = until_dt - pd.Timedelta(days=days - 1)
+    since_ql  = since_dt.strftime("%Y-%m-%d")
+    until_ql  = until_dt.strftime("%Y-%m-%d")
+
+    all_rows = []
+    for market, store, token in creds:
+        gql_query = (
+            f"SHOW day, sessions, added_to_cart_sessions, "
+            f"reached_checkout_sessions, sessions_converted, conversion_rate "
+            f"FROM sessions SINCE {since_ql} UNTIL {until_ql}"
+        )
+        gql_raw = '{ analyticsReport(query: "' + gql_query.replace('"', '\\"') + '") { result { headers rowData } } }'
+        try:
+            gql    = _shopify_graphql(store, token, gql_raw)
+            result = gql.get("data", {}).get("analyticsReport", {}).get("result", {})
+            headers  = result.get("headers", [])
+            row_data = result.get("rowData", [])
+            if not headers or not row_data:
+                continue
+            h = {v.lower(): i for i, v in enumerate(headers)}
+            for row in row_data:
+                def _g(k, cast=float):
+                    v = row[h[k]] if k in h else None
+                    try:
+                        return cast(v) if v not in (None, "") else None
+                    except (ValueError, TypeError):
+                        return None
+
+                dt = _g("day", str)
+                if not dt:
+                    continue
+                cr_raw = _g("conversion_rate")
+                cr = (cr_raw / 100 if cr_raw and cr_raw > 1 else cr_raw)
+                all_rows.append({
+                    "date":               pd.to_datetime(dt, errors="coerce"),
+                    "market":             market,
+                    "sessions":           _g("sessions", int) if "sessions" in h else None,
+                    "added_to_cart":      _g("added_to_cart_sessions", int) if "added_to_cart_sessions" in h else None,
+                    "reached_checkout":   _g("reached_checkout_sessions", int) if "reached_checkout_sessions" in h else None,
+                    "completed_checkout": _g("sessions_converted", int) if "sessions_converted" in h else None,
+                    "conversion_rate":    cr,
+                })
+        except Exception as exc:
+            logger.info("Funnel daily for %s failed: %s", market, exc)
+
+    if not all_rows:
+        return empty
+    return pd.DataFrame(all_rows).dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
 
 
 # ── Historical loaders (pre-Sep-2025) ─────────────────────────────────────────
