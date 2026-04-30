@@ -12,14 +12,14 @@ import webbrowser
 
 import requests
 
-CLIENT_ID     = "f55bcffe408817e0aadb0be3acb405c9"
-CLIENT_SECRET = "SHOPIFY_KSA_CLIENT_SECRET"  # set before running
+CLIENT_ID     = "8d4a1a7c30ca4ef07a55d9bc0e874b24"
+CLIENT_SECRET = "SHOPIFY_USA_CLIENT_SECRET"  # set before running
 SCOPES        = "read_orders,read_analytics,read_checkouts"
 REDIRECT_URI  = "http://localhost:3001/callback"
 PORT          = 3001
 
 STORES = {
-    "KSA": "wisewellsa.myshopify.com",
+    "USA": "sebastien-566.myshopify.com",
 }
 
 captured = {}
