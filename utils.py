@@ -738,16 +738,22 @@ def load_shopify_website_analytics() -> pd.DataFrame:
             padded = row + [""] * max(0, len(headers) - len(row))
             d = dict(zip(headers, padded))
 
-            date_val = pd.to_datetime(d.get("day", ""), dayfirst=True, errors="coerce")
+            # Accept both Shopify export ("day") and Apps Script ("date") header names
+            date_raw = d.get("date", d.get("day", ""))
+            date_val = pd.to_datetime(date_raw, dayfirst=True, errors="coerce")
             if pd.isna(date_val):
                 continue
 
-            def _int(key):
-                return int(float(d.get(key, 0) or 0))
+            def _int(key, alt=None):
+                val = d.get(key) or (d.get(alt) if alt else None) or 0
+                return int(float(val or 0))
 
-            cr_raw = str(d.get("conversion rate", "0")).replace("%", "").strip()
+            # Accept both Apps Script compact names and Shopify verbose export names
+            cr_raw = str(
+                d.get("conversion_rate", d.get("conversion rate", "0"))
+            ).replace("%", "").strip()
             try:
-                cr = float(cr_raw) / 100
+                cr = float(cr_raw) / 100 if float(cr_raw) > 1 else float(cr_raw)
             except ValueError:
                 cr = 0.0
 
@@ -755,9 +761,9 @@ def load_shopify_website_analytics() -> pd.DataFrame:
                 "date":                date_val,
                 "market":              market,
                 "sessions":            _int("sessions"),
-                "add_to_cart":         _int("sessions with cart additions"),
-                "reached_checkout":    _int("sessions that reached checkout"),
-                "completed_checkout":  _int("sessions that completed checkout"),
+                "add_to_cart":         _int("add_to_cart", "sessions with cart additions"),
+                "reached_checkout":    _int("reached_checkout", "sessions that reached checkout"),
+                "completed_checkout":  _int("completed_checkout", "sessions that completed checkout"),
                 "conversion_rate":     cr,
             })
 
