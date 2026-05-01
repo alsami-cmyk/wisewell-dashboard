@@ -7,7 +7,7 @@
  *      Type: Web app | Execute as: Me | Who has access: Anyone
  *      Copy the deployment URL → paste as ENDPOINT in the pixel scripts
  * 3. Set up nightly aggregation trigger:
- *      Triggers → + Add Trigger → aggregateYesterday
+ *      Triggers → + Add Trigger → aggregateToday
  *      Event source: Time-driven | Type: Day timer | Time: 1am–2am
  *
  * Sheet layout:
