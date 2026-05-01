@@ -749,7 +749,10 @@ def load_shopify_website_analytics() -> pd.DataFrame:
 
             def _int(key, alt=None):
                 val = d.get(key) or (d.get(alt) if alt else None) or 0
-                return int(float(val or 0))
+                try:
+                    return int(float(str(val).replace(",", "").strip() or 0))
+                except (ValueError, TypeError):
+                    return 0
 
             # Accept both Apps Script compact names and Shopify verbose export names
             cr_raw = str(

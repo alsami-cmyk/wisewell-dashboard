@@ -47,9 +47,12 @@ const RAW_HEADERS = [
   "utm_content", "fbclid", "gclid",
 ];
 
+// Per-market tab schema — matches the Shopify-exported historical schema.
+// Tab name implies the market, so no "market" column.
 const SUMMARY_HEADERS = [
-  "date", "market", "sessions", "new_sessions", "returning_sessions",
-  "add_to_cart", "reached_checkout", "completed_checkout", "conversion_rate",
+  "Day", "Sessions", "Sessions with cart additions",
+  "Sessions that reached checkout", "Sessions that completed checkout",
+  "Conversion rate", "New sessions", "Returning sessions",
 ];
 
 const SOURCE_HEADERS = [
@@ -393,7 +396,11 @@ function _aggregatePerMarket(targetByMarket) {
     else if (evt === "checkout_completed") bucket.completed++;
   });
 
-  // ── UPSERT: Per-market daily summary — each market uses its own dateStr ──
+  // ── UPSERT: Per-market daily summary ──
+  // Schema matches the existing Shopify-exported tab (no market column,
+  // since the tab name implies it):
+  // Day | Sessions | Sessions with cart additions | Sessions that reached checkout
+  //     | Sessions that completed checkout | Conversion rate | New sessions | Returning sessions
   MARKETS.forEach(market => {
     const s = summary[market];
     const sessions = s.sessions.size;
@@ -404,8 +411,14 @@ function _aggregatePerMarket(targetByMarket) {
     const sheet = getSummarySheet(market);
     _deleteRowsForDate(sheet, dateStr);
     sheet.appendRow([
-      dateStr, market, sessions, s.new_sessions.size, s.returning_sessions.size,
-      s.add_to_cart, s.reached_checkout, s.completed_checkout, cvrPct,
+      dateStr,
+      sessions,
+      s.add_to_cart,
+      s.reached_checkout,
+      s.completed_checkout,
+      cvrPct,
+      s.new_sessions.size,
+      s.returning_sessions.size,
     ]);
   });
 
