@@ -270,7 +270,7 @@ k5.metric(
 )
 
 # ── MTD sales vs. target meter ────────────────────────────────────────────────
-_TARGETS = {"UAE": 780, "USA": 50, "KSA": 0, "All": 780 + 50}  # KSA target TBC
+_TARGETS = {"UAE": 915, "USA": 50, "KSA": 0, "All": 915 + 50}  # KSA target TBC
 _target = _TARGETS.get(country_sel, 0)
 
 if _target > 0:
