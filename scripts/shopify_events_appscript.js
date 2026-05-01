@@ -208,24 +208,10 @@ function aggregateToday() {
   _aggregatePerMarket(targetByMarket);
 }
 
-/**
- * Run at 1am Dubai. Catches any late events for each market's local
- * yesterday. Note: when this runs at 1am Dubai, USA's "yesterday" is
- * the day that just ended at midnight ET ~9 hours earlier — that's
- * the intended behaviour.
- */
-function aggregateYesterday() {
-  const yest = new Date();
-  yest.setDate(yest.getDate() - 1);
-  const targetByMarket = {};
-  MARKETS.forEach(m => {
-    targetByMarket[m] = {
-      isoDate: Utilities.formatDate(yest, MARKET_TZ[m], "yyyy-MM-dd"),
-      dateStr: Utilities.formatDate(yest, MARKET_TZ[m], "dd/MM/yyyy"),
-    };
-  });
-  _aggregatePerMarket(targetByMarket);
-}
+// aggregateYesterday() removed by design — past dates are treated as
+// finalised (typically replaced with Shopify-native exports), and the
+// script must never touch them. If you need to backfill a specific date,
+// use aggregateDate("dd/MM/yyyy") manually from the editor.
 
 /**
  * Manual backfill: aggregateDate("27/04/2026")
