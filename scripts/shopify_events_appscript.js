@@ -241,13 +241,17 @@ function aggregateDate(ddmmyyyy) {
   _aggregatePerMarket(targetByMarket);
 }
 
-/** Delete all existing rows in `sheet` whose column-A value matches `dateStr`. */
+/** Delete all existing rows in `sheet` whose column-A *displayed* value matches
+ *  `dateStr`. Using getDisplayValues() so comparison works whether the cell
+ *  is a literal string "30/04/2026" or a Date object that displays as "30/04/2026"
+ *  (which happens when users paste from Shopify CSV exports). */
 function _deleteRowsForDate(sheet, dateStr) {
-  const data = sheet.getDataRange().getValues();
-  // Walk from bottom up so deletions don't shift indices we still need
-  for (let i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]).trim() === dateStr) {
-      sheet.deleteRow(i + 1);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const colA = sheet.getRange(2, 1, lastRow - 1, 1).getDisplayValues();
+  for (let i = colA.length - 1; i >= 0; i--) {
+    if (String(colA[i][0]).trim() === dateStr) {
+      sheet.deleteRow(i + 2);  // +2 because we started at sheet row 2 (skipping header)
     }
   }
 }
@@ -457,14 +461,17 @@ function _aggregatePerMarket(targetByMarket) {
              MARKETS.map(m => `${m}=${targetByMarket[m].dateStr}`).join(", "));
 }
 
-/** Delete rows where column A == date AND column B == market for any pair in `pairs`. */
+/** Delete rows where column A == date AND column B == market for any pair in `pairs`.
+ *  Uses getDisplayValues() to handle Date-typed cells (e.g. from manual pastes). */
 function _deleteRowsForDateMarketPairs(sheet, pairs) {
-  const data = sheet.getDataRange().getValues();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const colsAB = sheet.getRange(2, 1, lastRow - 1, 2).getDisplayValues();
   const set = new Set(pairs.map(p => `${p.date}||${p.market}`));
-  for (let i = data.length - 1; i >= 1; i--) {
-    const key = `${String(data[i][0]).trim()}||${String(data[i][1]).trim().toUpperCase()}`;
+  for (let i = colsAB.length - 1; i >= 0; i--) {
+    const key = `${String(colsAB[i][0]).trim()}||${String(colsAB[i][1]).trim().toUpperCase()}`;
     if (set.has(key)) {
-      sheet.deleteRow(i + 1);
+      sheet.deleteRow(i + 2);
     }
   }
 }
