@@ -333,6 +333,36 @@ if not m_daily.empty:
                 _rolling_check(prior["cpc"],      last_row["cpc"],      f"CPC spike ({latest_complete:%d %b})", invert=True)
                 _rolling_check(prior["cpp"],      last_row["cpp"],      f"Cost-per-order spike ({latest_complete:%d %b})", invert=True)
 
+    # ── Today's Meta spend pacing check ──
+    # Project today's EOD spend from current pace, compare to 7-day rolling avg.
+    # Flags if projected EOD is >25% below avg — catches throttled/capped days
+    # before end of business hours.
+    today_row = m_daily[m_daily["date"].dt.date == TODAY]
+    if not today_row.empty and len(full_days) >= 3:
+        today_spend = float(today_row.iloc[0]["spend"])
+        # Hours elapsed today in Asia/Dubai (the business reference TZ)
+        try:
+            from zoneinfo import ZoneInfo
+            now_dubai = datetime.now(ZoneInfo("Asia/Dubai"))
+            hours_elapsed = now_dubai.hour + (now_dubai.minute / 60)
+        except Exception:
+            hours_elapsed = datetime.now().hour
+        if hours_elapsed >= 4 and today_spend > 0:
+            # Linear projection (good enough for pacing)
+            projected_eod = today_spend * (24.0 / hours_elapsed)
+            recent_avg    = float(full_days.tail(7)["spend"].mean())
+            if recent_avg > 0:
+                pace_ratio = projected_eod / recent_avg
+                if pace_ratio < 0.75:  # >25% under
+                    flags.append((
+                        "🔴",
+                        f"**Meta spend under-pacing**: ${today_spend:,.0f} so far "
+                        f"({hours_elapsed:.0f}h in) → projected EOD **${projected_eod:,.0f}** "
+                        f"vs 7-day avg **${recent_avg:,.0f}** "
+                        f"({(pace_ratio - 1) * 100:+.0f}%). Check for budget caps, "
+                        f"audience saturation, or paused ad sets."
+                    ))
+
     # Spend with no orders day (skip today — partial)
     bad_days = full_days[(full_days["spend"] > 100) & (full_days["orders_actual"] == 0)] if not full_days.empty else pd.DataFrame()
     if len(bad_days) > 0:
