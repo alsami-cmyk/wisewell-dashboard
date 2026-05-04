@@ -9,6 +9,7 @@ import json
 import os
 import time
 import requests
+import urllib.parse
 from collections import defaultdict, Counter
 from datetime import date, timedelta
 from google.oauth2.credentials import Credentials
@@ -42,8 +43,10 @@ def get_sheets_creds():
         client_secret=td["client_secret"],
         scopes=td.get("scopes", ["https://www.googleapis.com/auth/spreadsheets"]),
     )
-    if not creds.valid:
-        creds.refresh(Request())
+    # Always force-refresh to guarantee a fresh access token regardless of stored expiry.
+    # Without passing `expiry` to the constructor, creds.valid is True even for stale tokens.
+    creds.refresh(Request())
+    print(f"  [auth] Token refreshed, expires: {creds.expiry}", flush=True)
     return creds
 
 
@@ -235,30 +238,60 @@ def build_analysis(charges, success_counts):
 
 
 # ── Sheet helpers ──────────────────────────────────────────────────────────────
+def _encode_range(range_name):
+    """URL-encode the sheet-name portion of a Sheets range (e.g. '📈 Tab!A:A')."""
+    if "!" in range_name:
+        sheet_part, cell_part = range_name.split("!", 1)
+        return urllib.parse.quote(sheet_part, safe="") + "!" + cell_part
+    return urllib.parse.quote(range_name, safe="!:")
+
+
 def sheets_get(creds, range_name):
     resp = requests.get(
-        f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/{range_name}",
+        f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/{_encode_range(range_name)}",
         headers={"Authorization": f"Bearer {creds.token}"},
     )
+    if not resp.ok:
+        print(f"  [sheets_get] ERROR on '{range_name}': {resp.status_code} {resp.text[:300]}", flush=True)
+        return []
     return resp.json().get("values", [])
 
 
 def sheets_clear(creds, range_name):
-    requests.post(
-        f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/{range_name}:clear",
+    resp = requests.post(
+        f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/{_encode_range(range_name)}:clear",
         headers={"Authorization": f"Bearer {creds.token}"},
     )
+    if not resp.ok:
+        print(f"  [sheets_clear] ERROR on '{range_name}': {resp.status_code} {resp.text[:200]}", flush=True)
 
 
 def sheets_put(creds, range_name, values):
     resp = requests.put(
-        f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/{range_name}"
+        f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/{_encode_range(range_name)}"
         f"?valueInputOption=USER_ENTERED",
         headers={"Authorization": f"Bearer {creds.token}", "Content-Type": "application/json"},
         json={"values": values},
     )
     if not resp.ok:
-        print(f"  sheets_put error on {range_name}: {resp.status_code} {resp.text[:200]}")
+        print(f"  [sheets_put] ERROR on '{range_name}': {resp.status_code} {resp.text[:300]}", flush=True)
+
+
+def sheets_append(creds, range_name, values):
+    """Append rows after the last row with data — avoids needing to count existing rows."""
+    resp = requests.post(
+        f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/{_encode_range(range_name)}:append"
+        f"?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS",
+        headers={"Authorization": f"Bearer {creds.token}", "Content-Type": "application/json"},
+        json={"values": values},
+    )
+    if not resp.ok:
+        print(f"  [sheets_append] ERROR on '{range_name}': {resp.status_code} {resp.text[:300]}", flush=True)
+        return False
+    body = resp.json()
+    updated = body.get("updates", {}).get("updatedRange", "?")
+    print(f"  [sheets_append] OK → {updated}", flush=True)
+    return True
 
 
 def get_crm_map(creds, tab_name):
@@ -540,28 +573,38 @@ def main():
     mach_debt_total = round(sum(r["est_debt"] for r in machine))
     filt_debt_total = round(sum(r["est_debt"] for r in filt))
     total_debt      = mach_debt_total + filt_debt_total
-    existing_dates  = sheets_get(creds, "📈 Recovery Tracker!A:A")
     today_str       = today.isoformat()
-    # Avoid duplicate rows for same date
-    if not any(row and row[0] == today_str for row in existing_dates):
+
+    # Re-fresh credentials before Recovery Tracker writes in case token aged during data fetch
+    creds.refresh(Request())
+
+    existing_dates  = sheets_get(creds, "📈 Recovery Tracker!A:A")
+    print(f"  Recovery Tracker existing rows: {len(existing_dates)}", flush=True)
+
+    already_logged = any(row and row[0] == today_str for row in existing_dates)
+    if already_logged:
+        print(f"  Row for {today_str} already exists — skipping", flush=True)
+    else:
+        # Compute next row number for the delta formula (append lands at len+1)
         next_row = len(existing_dates) + 1
-        sheets_put(creds, f"📈 Recovery Tracker!A{next_row}:H{next_row}", [[
+        delta_formula = f"=F{next_row}-F{next_row-1}" if next_row > 2 else ""
+        row_data = [
             today_str,
             str(len(machine)),
             str(mach_debt_total),
             str(len(filt)),
             str(filt_debt_total),
             str(total_debt),
-            "",   # Day Δ — formula set at build time per row; leave blank, sheet handles it
+            delta_formula,
             f"=SUMIF('📞 Activity Log'!$A:$A,A{next_row},'📞 Activity Log'!$L:$L)",
-        ]])
-        # Back-fill delta formula for this row
-        if next_row > 2:
-            sheets_put(creds, f"📈 Recovery Tracker!G{next_row}",
-                [[f"=F{next_row}-F{next_row-1}"]])
-        print(f"  Appended row {next_row} for {today_str}")
-    else:
-        print(f"  Row for {today_str} already exists — skipping")
+        ]
+        print(f"  Writing Recovery Tracker row {next_row}: {row_data[:6]}", flush=True)
+        # Use append API — finds last data row automatically, no row-counting fragility
+        ok = sheets_append(creds, "📈 Recovery Tracker!A:H", [row_data])
+        if ok:
+            print(f"  ✅ Recovery Tracker row appended for {today_str}", flush=True)
+        else:
+            print(f"  ❌ Recovery Tracker append FAILED for {today_str}", flush=True)
     time.sleep(0.3)
 
     # 7. Save snapshot metadata
