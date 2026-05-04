@@ -125,10 +125,14 @@ def _marketing_spend_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> float:
     """
     Day-prorated marketing spend in USD for [start_ts, end_ts] inclusive.
 
-    The Marketing Spend tab is monthly-grained, so to get an accurate
-    figure for sub-month windows (MTD, trailing 7 days, etc.) we
-    prorate each month's spend by the number of days from the window
-    that fall inside it.
+    For PAST months: the row holds the final monthly total — divide by
+    days-in-month so each day gets an equal share.
+
+    For the CURRENT month: the row holds cumulative actuals through the
+    last Meta sync (rebuilt 2x/day). It is NOT a full-month projection.
+    Dividing by days-in-month would heavily under-count MTD spend.
+    Instead, divide by days elapsed so far in the month — each day's
+    allocated spend equals the average per-day actual.
     """
     mkt = load_marketing_spend()
     if mkt is None or mkt.empty:
@@ -144,13 +148,20 @@ def _marketing_spend_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> float:
         for ms, spend in zip(mkt["month_dt"], mkt[col])
     }
 
+    today_norm           = pd.Timestamp.today().normalize()
+    current_month_start  = today_norm.to_period("M").to_timestamp()
+    days_elapsed_current = today_norm.day  # 1-indexed: May 2 → 2
+
     total = 0.0
     days = pd.date_range(start_ts.normalize(), end_ts.normalize(), freq="D")
     for day in days:
-        month_start    = day.to_period("M").to_timestamp()
-        days_in_month  = (month_start + pd.offsets.MonthEnd(0)).day
-        spend_for_mo   = month_to_spend.get(month_start, 0.0)
-        total         += spend_for_mo / days_in_month
+        month_start  = day.to_period("M").to_timestamp()
+        spend_for_mo = month_to_spend.get(month_start, 0.0)
+        if month_start == current_month_start:
+            divisor = max(days_elapsed_current, 1)
+        else:
+            divisor = (month_start + pd.offsets.MonthEnd(0)).day
+        total += spend_for_mo / divisor
     return total
 
 
@@ -171,9 +182,15 @@ def _fmt_delta(delta: float | None) -> str:
 today_d   = date.today()
 today_ts  = pd.Timestamp(today_d)
 mtd_start = pd.Timestamp(today_d.replace(day=1))
-# Previous full month for deltas
-prev_end   = mtd_start - pd.Timedelta(days=1)
-prev_start = prev_end.to_period("M").to_timestamp()
+
+# Comparison window: SAME number of days in the prior month, so MTD vs MTD
+# is apples-to-apples. e.g. May 1-2 compared to April 1-2 (not all of April).
+days_into_month = today_d.day
+prev_mtd_start  = (mtd_start - pd.DateOffset(months=1))
+prev_mtd_end    = prev_mtd_start + pd.Timedelta(days=days_into_month - 1)
+# Keep prev_end / prev_start aliases pointing at the like-for-like window
+prev_start = prev_mtd_start
+prev_end   = prev_mtd_end
 
 # Today / yesterday for the "Today's Sales" scorecard
 yesterday_ts = today_ts - pd.Timedelta(days=1)
@@ -242,21 +259,25 @@ k2.metric(
     "ARR (USD)",
     fmt_usd(cur_arr),
     delta=_fmt_delta(_delta_pct(cur_arr, prev_arr)),
-    help="Annualised run-rate from active Machine + Filter subs today vs. prior month end.",
+    help=f"Annualised run-rate from active Machine + Filter subs as of today "
+         f"vs. same MTD-day in prior month ({prev_end:%d %b %Y}).",
 )
 k3.metric(
     "TOTAL USER BASE",
     f"{cur_user_base:,}",
     delta=_fmt_delta(_delta_pct(cur_user_base, prev_user_base)),
-    help="Active machine subs + active ownership, as of today vs. prior month end.",
+    help=f"Active machine subs + active ownership today vs. same MTD-day "
+         f"in prior month ({prev_end:%d %b %Y}).",
 )
 k4.metric(
-    "MONTHLY CHURN RATE",
+    "MTD CHURN RATE",
     f"{cur_churn_rate:.2%}",
     delta=_fmt_delta(_delta_pct(cur_churn_rate, prev_churn_rate)),
     delta_color="inverse",
-    help="True machine cancels MTD ÷ active machine subs at start of month. "
-         "(Matches the Retention page denominator — machine subs only.)",
+    help=f"True machine cancels {mtd_start:%d %b}–{today_ts:%d %b} ÷ active "
+         f"machine subs at start of month. Compared to same {days_into_month}-day "
+         f"window of prior month ({prev_start:%d %b}–{prev_end:%d %b}). "
+         f"Note: this is partial-month — full-month rate will be higher.",
 )
 k5.metric(
     "CAC · MTD",
@@ -264,8 +285,10 @@ k5.metric(
     delta=_fmt_delta(_delta_pct(cur_cac, prev_cac)),
     delta_color="inverse",
     help=(
-        "Blended CAC = marketing spend ÷ new machine sales over the month. "
-        "Per-market spend pulled from Marketing Spend tab (UAE / KSA / USA columns)."
+        f"Blended CAC = marketing spend ÷ new machine sales for "
+        f"{mtd_start:%d %b}–{today_ts:%d %b}. Compared to same {days_into_month}-day "
+        f"window of prior month ({prev_start:%d %b}–{prev_end:%d %b}). "
+        f"Per-market spend pulled from Marketing Spend tab (UAE / KSA / USA columns)."
     ),
 )
 
