@@ -542,9 +542,15 @@ st.plotly_chart(fig_growth, use_container_width=True)
 
 # ── Efficiency: CAC and Churn Rate ────────────────────────────────────────────
 st.markdown("### Efficiency: CAC and Churn Rate")
+st.caption(
+    "The current (incomplete) month's churn rate is **projected** to a full-month "
+    "pace (MTD churns × days-in-month ÷ days-elapsed) so the trend stays comparable "
+    "to prior full months."
+)
 
 cac_series        = []
 churn_rate_series = []
+today_ts_norm     = pd.Timestamp(today_d)
 for i, (ms, mp) in enumerate(zip(month_starts, measure_points)):
     ms_ts = pd.Timestamp(ms)
     mp_ts = pd.Timestamp(mp)
@@ -554,9 +560,19 @@ for i, (ms, mp) in enumerate(zip(month_starts, measure_points)):
 
     churned_mo      = _churned_in(ms_ts, mp_ts)
     active_subs_mo  = _active_machine_subs_at(ms_ts)
-    churn_rate_series.append(
-        churned_mo / active_subs_mo if active_subs_mo > 0 else None
-    )
+    if active_subs_mo > 0:
+        # If this is the current (incomplete) month, project MTD pace to a
+        # full-month rate so the trend line stays comparable to prior months.
+        days_in_mo  = (ms_ts + pd.offsets.MonthEnd(0)).day
+        days_so_far = (mp_ts - ms_ts).days + 1
+        is_partial  = mp_ts < (ms_ts + pd.offsets.MonthEnd(0)) and mp_ts >= today_ts_norm
+        if is_partial and days_so_far > 0:
+            projected_churned = churned_mo * (days_in_mo / days_so_far)
+            churn_rate_series.append(projected_churned / active_subs_mo)
+        else:
+            churn_rate_series.append(churned_mo / active_subs_mo)
+    else:
+        churn_rate_series.append(None)
 
 churn_pct_series = [v * 100 if v is not None else None for v in churn_rate_series]
 

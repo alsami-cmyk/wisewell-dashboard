@@ -46,8 +46,24 @@ with c1:
         p_start, p_end = (_custom if isinstance(_custom, (list, tuple)) and len(_custom) == 2
                           else (today_d.replace(day=1), today_d))
 period_days       = max(1, (p_end - p_start).days)
-cmp_end_default   = p_start - timedelta(days=1)
-cmp_start_default = cmp_end_default - timedelta(days=period_days)
+
+# When the user selects MTD on the current month, the comparison default
+# is the prior FULL month (so MTD-projected rate compares to last full
+# month's actual rate). For all other selections, default to the same
+# N days immediately preceding the period.
+is_current_mtd = (
+    preset == "Month to Date"
+    and p_start == today_d.replace(day=1)
+    and p_end   == today_d
+)
+if is_current_mtd:
+    prior_month_end   = p_start - timedelta(days=1)
+    prior_month_start = prior_month_end.replace(day=1)
+    cmp_start_default = prior_month_start
+    cmp_end_default   = prior_month_end
+else:
+    cmp_end_default   = p_start - timedelta(days=1)
+    cmp_start_default = cmp_end_default - timedelta(days=period_days)
 
 with c2:
     cmp_range = st.date_input(
@@ -121,11 +137,30 @@ def _churns_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> pd.DataFrame:
     return rc_m.loc[mask].copy()
 
 
-def _period_metrics(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> dict:
+def _period_metrics(start_ts: pd.Timestamp, end_ts: pd.Timestamp,
+                    project_to_month: bool = False) -> dict:
+    """
+    Compute churn metrics for a window.
+
+    If project_to_month=True AND the window is the current month-to-date
+    (start = month start, end = today within that month), the rate is
+    projected to a full-month pace so it's comparable to prior full months.
+    """
     active_start = _active_at(start_ts)
     churn_df     = _churns_in(start_ts, end_ts)
     churned      = int(churn_df["quantity"].sum()) if not churn_df.empty else 0
-    rate         = churned / active_start if active_start > 0 else 0.0
+
+    # Optional pro-rata projection for the current MTD window
+    projected_churned = churned
+    is_projected      = False
+    if project_to_month and active_start > 0:
+        days_in_month = (start_ts + pd.offsets.MonthEnd(0)).day
+        days_so_far   = (end_ts - start_ts).days + 1
+        if 0 < days_so_far < days_in_month:
+            projected_churned = int(round(churned * (days_in_month / days_so_far)))
+            is_projected      = True
+
+    rate = projected_churned / active_start if active_start > 0 else 0.0
 
     # Avg lifetime (months) of churned subs in window
     if not churn_df.empty and "created_at_dt" in churn_df.columns:
@@ -145,11 +180,13 @@ def _period_metrics(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> dict:
         top_reason = "—"
 
     return {
-        "rate":          rate,
-        "active_start":  active_start,
-        "churned":       churned,
-        "avg_lifetime":  avg_lt_months,
-        "top_reason":    top_reason,
+        "rate":              rate,
+        "active_start":      active_start,
+        "churned":           churned,           # actual count over the window
+        "projected_churned": projected_churned, # equals churned unless projected
+        "is_projected":      is_projected,
+        "avg_lifetime":      avg_lt_months,
+        "top_reason":        top_reason,
     }
 
 
@@ -167,19 +204,33 @@ def _fmt_delta(delta: float | None) -> str:
 
 
 # ── Compute current + comparison ──────────────────────────────────────────────
-cur_m  = _period_metrics(p_start_ts,   p_end_ts)
-prev_m = _period_metrics(cmp_start_ts, cmp_end_ts)
+# Project rate to a full-month pace ONLY when current MTD on this month is selected.
+cur_m  = _period_metrics(p_start_ts,   p_end_ts,   project_to_month=is_current_mtd)
+prev_m = _period_metrics(cmp_start_ts, cmp_end_ts, project_to_month=False)
 
 # ── Scorecards ────────────────────────────────────────────────────────────────
 st.markdown("---")
 k1, k2, k3, k4, k5 = st.columns(5)
 
+if cur_m["is_projected"]:
+    rate_label = "PROJECTED MONTHLY CHURN"
+    rate_help = (
+        f"Pro-rata projection: {cur_m['churned']:,} cancels MTD scaled to a "
+        f"full-month pace (~{cur_m['projected_churned']:,} projected) "
+        f"÷ {cur_m['active_start']:,} active at month start. "
+        f"Comparison: actual full-month rate for "
+        f"{cmp_start_ts:%b %Y} ({prev_m['churned']:,} cancels)."
+    )
+else:
+    rate_label = "CANCELLATION RATE"
+    rate_help = "Churned in period ÷ active at start of period."
+
 k1.metric(
-    "CANCELLATION RATE",
+    rate_label,
     f"{cur_m['rate']:.2%}",
     delta=_fmt_delta(_delta_pct(cur_m["rate"], prev_m["rate"])),
     delta_color="inverse",
-    help="Churned in period ÷ active at start of period.",
+    help=rate_help,
 )
 k2.metric(
     "ACTIVE SUBS AT START",
@@ -242,7 +293,9 @@ with mode_col:
         label_visibility="collapsed",
     )
 
-# Clamp buckets to window and compute metric per bucket
+# Clamp buckets to window and compute metric per bucket.
+# For incomplete buckets (clamped at today), project rate to the natural
+# bucket length so the trend remains comparable to prior complete buckets.
 today_ts = pd.Timestamp.today().normalize()
 rate_x, rate_y, count_y = [], [], []
 for i, bstart in enumerate(bucket_dates):
@@ -257,10 +310,22 @@ for i, bstart in enumerate(bucket_dates):
     if bstart_c > bend_c:
         continue
 
+    natural_days = (bend - bstart).days + 1
+    actual_days  = (bend_c - bstart_c).days + 1
+    is_partial   = actual_days < natural_days and bend_c >= today_ts
+
     active = _active_at(bstart_c)
     churn_df = _churns_in(bstart_c, bend_c)
     churned  = int(churn_df["quantity"].sum()) if not churn_df.empty else 0
-    rate     = (churned / active) if active > 0 else 0.0
+
+    if active > 0:
+        if is_partial and actual_days > 0:
+            projected = churned * (natural_days / actual_days)
+            rate = projected / active
+        else:
+            rate = churned / active
+    else:
+        rate = 0.0
 
     rate_x.append(bstart_c)
     rate_y.append(rate)
