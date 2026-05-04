@@ -183,12 +183,26 @@ today_d   = date.today()
 today_ts  = pd.Timestamp(today_d)
 mtd_start = pd.Timestamp(today_d.replace(day=1))
 
-# Comparison window: SAME number of days in the prior month, so MTD vs MTD
-# is apples-to-apples. e.g. May 1-2 compared to April 1-2 (not all of April).
-days_into_month = today_d.day
+# Two prior-period windows, used for different metrics:
+#
+#   prev_mtd_*   — same N days of prior month (e.g. April 1-2 when MTD is
+#                  May 1-2). Used for sales / spend / CAC where MTD-vs-MTD
+#                  is apples-to-apples.
+#
+#   prev_full_*  — full prior month (April 1-30). Used for the projected
+#                  monthly churn rate, which compares "if May continues at
+#                  this pace, full-month churn rate" to "April's actual
+#                  full-month churn rate".
+days_into_month   = today_d.day
+days_in_cur_month = (mtd_start + pd.offsets.MonthEnd(0)).day  # 31 for May
+
 prev_mtd_start  = (mtd_start - pd.DateOffset(months=1))
 prev_mtd_end    = prev_mtd_start + pd.Timedelta(days=days_into_month - 1)
-# Keep prev_end / prev_start aliases pointing at the like-for-like window
+
+prev_full_start = prev_mtd_start
+prev_full_end   = mtd_start - pd.Timedelta(days=1)
+
+# MTD-aligned aliases used for sales / spend / user-base / ARR comparisons
 prev_start = prev_mtd_start
 prev_end   = prev_mtd_end
 
@@ -230,13 +244,26 @@ t7_cac             = (t7_spend / t7_sales)            if t7_sales      > 0 else 
 t7_prev_cac        = (t7_prev_spend / t7_prev_sales)  if t7_prev_sales > 0 else 0.0
 
 # Monthly churn rate — denominator is ACTIVE MACHINE SUBS only,
-# matching the convention on the Retention page (was previously
-# subs + ownership, which inflated the denominator and showed a
-# lower rate than the Retention page).
-active_subs_mtd_start   = _active_machine_subs_at(mtd_start)
-active_subs_prev_start  = _active_machine_subs_at(prev_start)
-cur_churn_rate   = (cur_churn / active_subs_mtd_start)  if active_subs_mtd_start  > 0 else 0.0
-prev_churn_rate  = (prev_churn / active_subs_prev_start) if active_subs_prev_start > 0 else 0.0
+# matching the convention on the Retention page.
+#
+# CURRENT month: project MTD churn to a full-month rate based on pace so far.
+#   projected_full_month_churn = mtd_churn × (days_in_month / days_into_month)
+#   projected_rate             = projected_full_month_churn / active_at_month_start
+#
+# PRIOR month: actual full-month churn rate (April 1-30 churn / April 1 base).
+active_subs_mtd_start        = _active_machine_subs_at(mtd_start)
+active_subs_prev_full_start  = _active_machine_subs_at(prev_full_start)
+
+prev_full_churn = _churned_in(prev_full_start, prev_full_end)
+
+if active_subs_mtd_start > 0 and days_into_month > 0:
+    projected_full_churn = cur_churn * (days_in_cur_month / days_into_month)
+    cur_churn_rate       = projected_full_churn / active_subs_mtd_start
+else:
+    cur_churn_rate = 0.0
+
+prev_churn_rate = (prev_full_churn / active_subs_prev_full_start) \
+                  if active_subs_prev_full_start > 0 else 0.0
 
 # CAC MTD
 cur_spend   = _marketing_spend_in(mtd_start, today_ts)
@@ -270,14 +297,19 @@ k3.metric(
          f"in prior month ({prev_end:%d %b %Y}).",
 )
 k4.metric(
-    "MTD CHURN RATE",
+    "PROJECTED MONTHLY CHURN",
     f"{cur_churn_rate:.2%}",
     delta=_fmt_delta(_delta_pct(cur_churn_rate, prev_churn_rate)),
     delta_color="inverse",
-    help=f"True machine cancels {mtd_start:%d %b}–{today_ts:%d %b} ÷ active "
-         f"machine subs at start of month. Compared to same {days_into_month}-day "
-         f"window of prior month ({prev_start:%d %b}–{prev_end:%d %b}). "
-         f"Note: this is partial-month — full-month rate will be higher.",
+    help=(
+        f"Pro-rata projection: MTD churns ({cur_churn:,} between "
+        f"{mtd_start:%d %b} and {today_ts:%d %b}) scaled to full-month pace "
+        f"({days_in_cur_month}/{days_into_month}× = "
+        f"~{cur_churn * days_in_cur_month / max(days_into_month,1):.0f} projected), "
+        f"then divided by active machine subs at month start. "
+        f"Comparison: actual full-month churn rate for "
+        f"{prev_full_start:%b %Y} ({prev_full_churn:,} cancels)."
+    ),
 )
 k5.metric(
     "CAC · MTD",
