@@ -420,54 +420,41 @@ else:
         )
 
     with pcol_right:
-        # Market-split delta: actual MTD vs projected breakdown
+        # Product-split delta: actual MTD vs projected breakdown.
+        # When "All" is selected, sum projected products across UAE+KSA+USA.
+        # When a market is selected, use that market's product projection.
         if country_sel == "All":
-            split_rows = []
-            sales_df = get_all_machine_sales(start_dt=mtd_start, end_dt=today_ts)
+            proj_products = {}
             for mkt in ("UAE", "KSA", "USA"):
-                actual_mkt = (
-                    int(sales_df[sales_df["market"] == mkt]["qty"].sum())
-                    if not sales_df.empty else 0
-                )
-                proj_mkt = _proj_month["by_market"].get(mkt, 0)
-                expected_mkt = proj_mkt * (_days_so_far / _days_in_month)
-                delta_pp = (actual_mkt - expected_mkt)
-                actual_pct = (actual_mkt / cur_new * 100) if cur_new > 0 else 0
-                proj_pct   = _proj_month["by_market_pct"].get(mkt, 0) * 100
-                split_rows.append({
-                    "Market":      mkt,
-                    "MTD":         f"{actual_mkt:,}",
-                    "Pace Δ":      f"{'+' if delta_pp >= 0 else ''}{delta_pp:.0f}",
-                    "Mix %":       f"{actual_pct:.0f}%",
-                    "Proj Mix %":  f"{proj_pct:.0f}%",
-                })
-            _split_title = "MARKET MIX"
-            split_df = pd.DataFrame(split_rows)
+                for p, q in _proj_month.get(f"by_{mkt.lower()}_product", {}).items():
+                    proj_products[p] = proj_products.get(p, 0) + q
+            sales_df = get_all_machine_sales(start_dt=mtd_start, end_dt=today_ts)
+            _split_title = "PRODUCT MIX"
         else:
-            # Show product split for the selected market
-            prod_key = f"by_{country_sel.lower()}_product"
-            proj_products = _proj_month.get(prod_key, {})
-            proj_total    = sum(proj_products.values()) or 1
+            proj_products = _proj_month.get(f"by_{country_sel.lower()}_product", {})
             sales_df = get_all_machine_sales(start_dt=mtd_start, end_dt=today_ts)
             sales_df = sales_df[sales_df["market"] == country_sel] if not sales_df.empty else sales_df
-            split_rows = []
-            for prod, proj_qty in proj_products.items():
-                if proj_qty == 0 and (sales_df.empty or sales_df[sales_df["product"] == prod]["qty"].sum() == 0):
-                    continue
-                actual_qty = int(sales_df[sales_df["product"] == prod]["qty"].sum()) if not sales_df.empty else 0
-                expected = proj_qty * (_days_so_far / _days_in_month)
-                delta = actual_qty - expected
-                actual_pct = (actual_qty / cur_new * 100) if cur_new > 0 else 0
-                proj_pct   = (proj_qty / proj_total * 100)
-                split_rows.append({
-                    "Product":    prod,
-                    "MTD":        f"{actual_qty:,}",
-                    "Pace Δ":     f"{'+' if delta >= 0 else ''}{delta:.0f}",
-                    "Mix %":      f"{actual_pct:.0f}%",
-                    "Proj Mix %": f"{proj_pct:.0f}%",
-                })
             _split_title = f"{country_sel} PRODUCT MIX"
-            split_df = pd.DataFrame(split_rows)
+
+        proj_total = sum(proj_products.values()) or 1
+        split_rows = []
+        for prod, proj_qty in proj_products.items():
+            actual_qty = int(sales_df[sales_df["product"] == prod]["qty"].sum()) if not sales_df.empty else 0
+            # Skip products with no projection AND no actual sales
+            if proj_qty == 0 and actual_qty == 0:
+                continue
+            expected   = proj_qty * (_days_so_far / _days_in_month)
+            delta      = actual_qty - expected
+            actual_pct = (actual_qty / cur_new * 100) if cur_new > 0 else 0
+            proj_pct   = (proj_qty / proj_total * 100)
+            split_rows.append({
+                "Product":    prod,
+                "MTD":        f"{actual_qty:,}",
+                "Pace Δ":     f"{'+' if delta >= 0 else ''}{delta:.0f}",
+                "Mix %":      f"{actual_pct:.0f}%",
+                "Proj Mix %": f"{proj_pct:.0f}%",
+            })
+        split_df = pd.DataFrame(split_rows)
 
         st.markdown(
             f"<div style='font-size:11px; color:#94a3b8; letter-spacing:0.05em; "
@@ -475,7 +462,7 @@ else:
             unsafe_allow_html=True,
         )
         if not split_df.empty:
-            st.dataframe(split_df, hide_index=True, use_container_width=True, height=180)
+            st.dataframe(split_df, hide_index=True, use_container_width=True, height=210)
 
 # ── Trailing 7-Day Analysis ───────────────────────────────────────────────────
 st.markdown("---")
