@@ -27,6 +27,45 @@ if st.query_params.get("health"):
     st.write("OK")
     st.stop()
 
+# ── Password gate ─────────────────────────────────────────────────────────────
+# Set DASHBOARD_PASSWORD in Streamlit secrets to enable. If unset, dashboard
+# is open (useful for local dev). If set, every visitor must enter the password
+# once per session.
+def _require_password() -> None:
+    try:
+        expected = st.secrets["DASHBOARD_PASSWORD"]
+    except (KeyError, FileNotFoundError):
+        return  # no password configured → skip gate
+
+    if st.session_state.get("auth_ok"):
+        return
+
+    # Render a centered login form
+    _, c, _ = st.columns([1, 1.2, 1])
+    with c:
+        st.markdown(
+            "<div style='text-align:center; padding-top:60px;'>"
+            "<h2 style='color:#e2e8f0; margin-bottom:8px;'>💧 Wisewell Dashboard</h2>"
+            "<p style='color:#94a3b8; font-size:14px; margin-bottom:32px;'>"
+            "Please enter the access password to continue.</p>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        with st.form("login_form", clear_on_submit=False):
+            pw = st.text_input("Password", type="password", label_visibility="collapsed",
+                               placeholder="Password")
+            ok = st.form_submit_button("Sign in", use_container_width=True, type="primary")
+        if ok:
+            if pw == expected:
+                st.session_state["auth_ok"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
+    st.stop()
+
+
+_require_password()
+
 st_autorefresh(interval=5 * 60 * 1000, key="auto_refresh")
 st.markdown(SHARED_CSS, unsafe_allow_html=True)
 st.markdown("""
