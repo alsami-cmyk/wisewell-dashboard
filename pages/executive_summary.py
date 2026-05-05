@@ -228,9 +228,11 @@ cur_churn   = _churned_in(mtd_start, today_ts)
 prev_new    = _new_sales_in(prev_start, prev_end)
 prev_churn  = _churned_in(prev_start, prev_end)
 
-# Today / yesterday sales (for "Today's Sales" scorecard)
-today_sales       = _new_sales_in(today_ts, today_ts)
-yesterday_sales   = _new_sales_in(yesterday_ts, yesterday_ts)
+# Today / yesterday / same-day-last-week sales (for the headline scorecards)
+today_sales            = _new_sales_in(today_ts, today_ts)
+yesterday_sales        = _new_sales_in(yesterday_ts, yesterday_ts)
+same_day_last_week_ts  = today_ts - pd.Timedelta(days=7)
+same_day_last_week_sales = _new_sales_in(same_day_last_week_ts, same_day_last_week_ts)
 
 # Trailing 7d figures
 t7_sales           = _new_sales_in(t7_start, t7_end)
@@ -274,7 +276,7 @@ prev_cac = (prev_spend / prev_new) if prev_new > 0 else 0.0
 
 # ── Row 1: Headline KPIs ──────────────────────────────────────────────────────
 st.markdown("---")
-k1, k2, k3, k4, k5 = st.columns(5)
+k1, k2, k3, k4, k5, k6 = st.columns(6)
 
 k1.metric(
     "TODAY'S SALES",
@@ -284,20 +286,30 @@ k1.metric(
          "expect this to grow throughout the day.",
 )
 k2.metric(
+    f"SAME DAY · LAST WEEK ({same_day_last_week_ts:%a %d %b})",
+    f"{same_day_last_week_sales:,}",
+    delta=_fmt_delta(_delta_pct(today_sales, same_day_last_week_sales)),
+    help=(
+        f"New machine sales on **{same_day_last_week_ts:%A %d %b %Y}** "
+        f"(7 days ago, same weekday). Delta shows today's sales "
+        f"vs. that day — useful since day-of-week affects volume."
+    ),
+)
+k3.metric(
     "ARR (USD)",
     fmt_usd(cur_arr),
     delta=_fmt_delta(_delta_pct(cur_arr, prev_arr)),
     help=f"Annualised run-rate from active Machine + Filter subs as of today "
          f"vs. same MTD-day in prior month ({prev_end:%d %b %Y}).",
 )
-k3.metric(
+k4.metric(
     "TOTAL USER BASE",
     f"{cur_user_base:,}",
     delta=_fmt_delta(_delta_pct(cur_user_base, prev_user_base)),
     help=f"Active machine subs + active ownership today vs. same MTD-day "
          f"in prior month ({prev_end:%d %b %Y}).",
 )
-k4.metric(
+k5.metric(
     "PROJECTED MONTHLY CHURN",
     f"{cur_churn_rate:.2%}",
     delta=_fmt_delta(_delta_pct(cur_churn_rate, prev_churn_rate)),
@@ -312,7 +324,7 @@ k4.metric(
         f"{prev_full_start:%b %Y} ({prev_full_churn:,} cancels)."
     ),
 )
-k5.metric(
+k6.metric(
     "CAC · MTD",
     fmt_usd(cur_cac) if cur_cac > 0 else "—",
     delta=_fmt_delta(_delta_pct(cur_cac, prev_cac)),
