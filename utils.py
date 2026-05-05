@@ -60,6 +60,7 @@ RAW_TABS = [
     "Shopify Website - UAE", "Shopify Website - KSA", "Shopify Website - USA",
     "Sessions by Source - Daily",
     "Top Landing Pages - Daily",
+    "Projections",
 ]
 # Historical (hardcoded) tabs — pre-Sep-2025 final truth
 HIST_TABS = ["Monthly Sales", "Monthly Cancellations", "Monthly User Base"]
@@ -683,6 +684,144 @@ def load_marketing_spend() -> pd.DataFrame:
     df["usa_usd"]   = _spend("USA")
 
     return df[["month_dt", "total_usd", "uae_usd", "ksa_usd", "usa_usd"]].sort_values("month_dt").reset_index(drop=True)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_projections() -> dict:
+    """
+    Load the 'Projections' tab and return a structured dict of per-month
+    projections used by the executive-summary target meter.
+
+    Schema returned:
+      {
+        "2026-05-01": {
+            "global":  1015,
+            "by_market":   {"UAE": 915, "KSA": 0,   "USA": 100},
+            "by_market_pct": {"UAE": 0.90, "KSA": 0.0, "USA": 0.10},
+            "by_uae_product":  {"Model 1": 143, "Nano+": 287, ...},
+            "by_ksa_product":  {...},
+            "by_usa_product":  {"Model 1": 49, "Nano+": 49, ...},
+        },
+        ...
+      }
+
+    Returns empty dict if the tab is missing or malformed.
+    """
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    rows = raw_data.get("Projections", [])
+    if len(rows) < 4:
+        return {}
+
+    # Row 0 = month labels in column B onwards (e.g. "Mar-26")
+    month_labels = rows[0][1:]
+    months = []
+    for lbl in month_labels:
+        try:
+            m = pd.to_datetime(str(lbl).strip(), format="%b-%y").normalize()
+            months.append(m)
+        except Exception:
+            months.append(None)
+
+    def _row_by_label(label: str, after_idx: int = 0) -> list[str] | None:
+        """Find a row whose first cell matches `label` (case-insensitive),
+        searching from `after_idx` onwards."""
+        target = label.strip().lower()
+        for i in range(after_idx, len(rows)):
+            r = rows[i]
+            if r and str(r[0]).strip().lower() == target:
+                return r
+        return None
+
+    def _to_int(s) -> int:
+        try:
+            return int(float(str(s).replace(",", "").replace("%", "").strip() or 0))
+        except (ValueError, TypeError):
+            return 0
+
+    def _to_pct(s) -> float:
+        s = str(s).replace("%", "").strip()
+        try:
+            v = float(s)
+            return v / 100 if v > 1 else v
+        except (ValueError, TypeError):
+            return 0.0
+
+    # Total rows
+    row_uae   = _row_by_label("Total Gross Sales - GCC")
+    row_usa   = _row_by_label("Total Gross Sales - USA")
+    row_glob  = _row_by_label("Total Gross Sales - Global")
+    if not row_glob:
+        return {}
+
+    # Find per-market product detail rows by anchor labels
+    # (Total Subscription Sales / Total Ownership Sales appear multiple times,
+    # one per market — anchor on the section header that precedes them.)
+    def _find_section(name: str) -> int:
+        n = name.strip().lower()
+        for i, r in enumerate(rows):
+            if r and len(r) >= 1 and str(r[0]).strip().lower() == n and (len(r) == 1 or not str(r[1]).strip()):
+                return i
+        return -1
+
+    uae_idx = _find_section("UAE")
+    ksa_idx = _find_section("KSA")
+    usa_idx = _find_section("USA")
+
+    # Per-market product totals = sum of subscription + ownership rows for each product
+    PRODUCTS = ["Model 1", "Nano+", "Bubble", "Flat", "Nano Tank"]
+
+    def _product_totals(section_start: int) -> dict[str, list[int]]:
+        """Walk forward from section header; sum subscription + ownership product
+        rows until we hit 'Total <market> Sales'."""
+        out = {p: [0] * len(months) for p in PRODUCTS}
+        if section_start < 0:
+            return out
+        i = section_start + 1
+        while i < len(rows):
+            r = rows[i]
+            label = str(r[0]).strip() if r else ""
+            if label.startswith("Total ") and label.endswith(" Sales") and "Total Subscription" not in label and "Total Ownership" not in label:
+                break
+            if label in PRODUCTS:
+                for j, val in enumerate(r[1:], start=0):
+                    if j < len(months) and months[j] is not None:
+                        out[label][j] += _to_int(val)
+            i += 1
+        return out
+
+    uae_prod = _product_totals(uae_idx)
+    ksa_prod = _product_totals(ksa_idx)
+    usa_prod = _product_totals(usa_idx)
+
+    # Build per-month dict
+    out: dict = {}
+    for j, m in enumerate(months):
+        if m is None:
+            continue
+        glob = _to_int(row_glob[j + 1])     if j + 1 < len(row_glob)   else 0
+        uae  = _to_int(row_uae[j + 1])      if row_uae  and j + 1 < len(row_uae)  else 0
+        usa  = _to_int(row_usa[j + 1])      if row_usa  and j + 1 < len(row_usa)  else 0
+        ksa  = max(0, uae - sum(uae_prod[p][j] for p in PRODUCTS))  # GCC = UAE row but if KSA breakouts exist
+        # Use direct KSA totals if any non-zero
+        ksa_direct = sum(ksa_prod[p][j] for p in PRODUCTS)
+        if ksa_direct > 0:
+            ksa = ksa_direct
+            uae = max(0, uae - ksa_direct) if (uae - ksa_direct) > 0 else 0
+        denom = glob if glob > 0 else max(uae + ksa + usa, 1)
+        out[m.strftime("%Y-%m-%d")] = {
+            "month_dt": m,
+            "global":   glob,
+            "by_market": {"UAE": uae, "KSA": ksa, "USA": usa},
+            "by_market_pct": {
+                "UAE": uae / denom,
+                "KSA": ksa / denom,
+                "USA": usa / denom,
+            },
+            "by_uae_product": {p: uae_prod[p][j] for p in PRODUCTS},
+            "by_ksa_product": {p: ksa_prod[p][j] for p in PRODUCTS},
+            "by_usa_product": {p: usa_prod[p][j] for p in PRODUCTS},
+        }
+    return out
 
 
 @st.cache_data(ttl=300, show_spinner=False)

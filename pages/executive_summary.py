@@ -30,6 +30,7 @@ from utils import (
     get_all_machine_sales,
     get_fx,
     load_marketing_spend,
+    load_projections,
     load_recharge_full,
 )
 
@@ -324,63 +325,157 @@ k5.metric(
     ),
 )
 
-# ── MTD sales vs. target meter ────────────────────────────────────────────────
-_TARGETS = {"UAE": 915, "USA": 100, "KSA": 0, "All": 915 + 100}  # KSA target TBC
-_target = _TARGETS.get(country_sel, 0)
+# ── MTD sales vs. projections ─────────────────────────────────────────────────
+_proj = load_projections()
+_proj_key = mtd_start.strftime("%Y-%m-%d")
+_proj_month = _proj.get(_proj_key)
 
-if _target > 0:
-    _pct = cur_new / _target * 100 if _target else 0
-    _bar_color = "#10b981" if _pct >= 100 else "#818cf8"
-    fig_meter = go.Figure(
-        go.Indicator(
-            mode="gauge+number",
-            value=cur_new,
-            number=dict(
-                suffix=f" / {_target:,}",
-                font=dict(size=26, color="#e2e8f0"),
-            ),
-            title=dict(
-                text=(
-                    f"<b>MTD SALES VS. TARGET · {country_sel.upper()}</b>"
-                    f"<br><span style='font-size:12px;color:#94a3b8'>"
-                    f"{_pct:.0f}% of {_target:,} target</span>"
-                ),
-                font=dict(size=13, color="#cbd5e1"),
-            ),
-            gauge=dict(
-                axis=dict(
-                    range=[0, max(_target * 1.1, cur_new * 1.05)],
-                    tickcolor="#475569",
-                    tickfont=dict(color="#94a3b8", size=10),
-                ),
-                bar=dict(color=_bar_color, thickness=0.7),
-                bgcolor="rgba(30,41,59,0.6)",
-                borderwidth=0,
-                steps=[
-                    dict(range=[0, _target * 0.5], color="rgba(239,68,68,0.20)"),
-                    dict(range=[_target * 0.5, _target * 0.8], color="rgba(245,158,11,0.20)"),
-                    dict(range=[_target * 0.8, _target], color="rgba(16,185,129,0.20)"),
-                ],
-                threshold=dict(
-                    line=dict(color="#e2e8f0", width=3),
-                    thickness=0.85,
-                    value=_target,
-                ),
-            ),
-        )
-    )
-    fig_meter.update_layout(
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        height=230,
-        margin=dict(l=30, r=30, t=70, b=10),
-    )
-    st.plotly_chart(fig_meter, use_container_width=True)
-else:
+if _proj_month is None:
     st.caption(
-        f"ℹ️ No MTD sales target set for **{country_sel}**. "
+        f"ℹ️ No projection found for **{mtd_start:%b %Y}** in the Projections tab. "
         f"Current MTD sales: **{cur_new:,}**."
     )
+else:
+    # Target value depends on country filter
+    if country_sel == "All":
+        _target       = _proj_month["global"]
+        _proj_market_split = _proj_month["by_market"]   # absolute counts
+    else:
+        _target       = _proj_month["by_market"].get(country_sel, 0)
+        _proj_market_split = {country_sel: _target}
+
+    # Pace-aware projection: where does the current month land if the daily pace continues?
+    _days_so_far    = days_into_month
+    _days_in_month  = days_in_cur_month
+    _projected_eom  = (cur_new / _days_so_far * _days_in_month) if _days_so_far > 0 else 0
+    _pct_of_target  = (cur_new / _target * 100) if _target > 0 else 0
+    _proj_pct       = (_projected_eom / _target * 100) if _target > 0 else 0
+
+    # Linear pacing: at day N, you should be N/days_in_month of target.
+    _expected_so_far = _target * (_days_so_far / _days_in_month)
+    _pace_delta      = cur_new - _expected_so_far
+
+    # On-track / behind status
+    if _projected_eom >= _target * 0.98:
+        _status_label = "✅ ON TRACK"
+        _status_color = "#10b981"
+    elif _projected_eom >= _target * 0.85:
+        _status_label = "⚠️ SLIGHTLY BEHIND"
+        _status_color = "#f59e0b"
+    else:
+        _status_label = "🔴 BEHIND TARGET"
+        _status_color = "#ef4444"
+
+    # Layout: progress bar on left (~65%), market split on right (~35%)
+    pcol_left, pcol_right = st.columns([2.0, 1.0])
+
+    with pcol_left:
+        # Progress bar — capped at 100% for the fill, but actual % is shown
+        _fill_pct = min(_pct_of_target, 100)
+        _bar_color = "#10b981" if _pct_of_target >= 100 else (
+                     "#22c55e" if _pace_delta >= 0 else
+                     "#f59e0b" if _projected_eom >= _target * 0.85 else "#ef4444")
+
+        st.markdown(
+            f"""
+            <div style="padding:14px 16px; background:rgba(30,41,59,0.5); border-radius:12px;
+                        border:1px solid rgba(71,85,105,0.4);">
+              <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;">
+                <div style="font-size:12px; color:#94a3b8; letter-spacing:0.05em;">
+                  {country_sel.upper()} TARGET · {mtd_start.strftime('%b %Y').upper()}
+                </div>
+                <div style="font-size:11px; color:{_status_color}; font-weight:600;">
+                  {_status_label}
+                </div>
+              </div>
+              <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;">
+                <div style="font-size:24px; font-weight:600; color:#e2e8f0;">
+                  {cur_new:,} <span style="font-size:14px; color:#64748b;">/ {_target:,}</span>
+                </div>
+                <div style="font-size:14px; color:#cbd5e1;">
+                  <strong>{_pct_of_target:.0f}%</strong> of target
+                </div>
+              </div>
+              <div style="position:relative; height:14px; background:rgba(15,23,42,0.6);
+                          border-radius:7px; overflow:hidden;">
+                <div style="position:absolute; left:0; top:0; height:100%;
+                            width:{_fill_pct:.1f}%; background:{_bar_color};
+                            border-radius:7px;"></div>
+                <!-- Pace indicator: where you should be by today, linearly -->
+                <div style="position:absolute; left:{(_days_so_far/_days_in_month)*100:.1f}%;
+                            top:-2px; height:18px; width:2px; background:#e2e8f0;
+                            opacity:0.5;" title="Linear pace marker"></div>
+              </div>
+              <div style="display:flex; justify-content:space-between; margin-top:8px;
+                          font-size:11px; color:#94a3b8;">
+                <span>Pace: <strong style="color:{'#22c55e' if _pace_delta >= 0 else '#ef4444'}">
+                  {'+' if _pace_delta >= 0 else ''}{_pace_delta:.0f}
+                </strong> vs linear ({_expected_so_far:,.0f} expected by today)</span>
+                <span>Projected EOM: <strong style="color:#cbd5e1">{_projected_eom:,.0f}</strong>
+                  ({'+' if _projected_eom >= _target else ''}{(_projected_eom - _target):,.0f} vs target)</span>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with pcol_right:
+        # Market-split delta: actual MTD vs projected breakdown
+        if country_sel == "All":
+            split_rows = []
+            sales_df = get_all_machine_sales(start_dt=mtd_start, end_dt=today_ts)
+            for mkt in ("UAE", "KSA", "USA"):
+                actual_mkt = (
+                    int(sales_df[sales_df["market"] == mkt]["qty"].sum())
+                    if not sales_df.empty else 0
+                )
+                proj_mkt = _proj_month["by_market"].get(mkt, 0)
+                expected_mkt = proj_mkt * (_days_so_far / _days_in_month)
+                delta_pp = (actual_mkt - expected_mkt)
+                actual_pct = (actual_mkt / cur_new * 100) if cur_new > 0 else 0
+                proj_pct   = _proj_month["by_market_pct"].get(mkt, 0) * 100
+                split_rows.append({
+                    "Market":      mkt,
+                    "MTD":         f"{actual_mkt:,}",
+                    "Pace Δ":      f"{'+' if delta_pp >= 0 else ''}{delta_pp:.0f}",
+                    "Mix %":       f"{actual_pct:.0f}%",
+                    "Proj Mix %":  f"{proj_pct:.0f}%",
+                })
+            _split_title = "MARKET MIX"
+            split_df = pd.DataFrame(split_rows)
+        else:
+            # Show product split for the selected market
+            prod_key = f"by_{country_sel.lower()}_product"
+            proj_products = _proj_month.get(prod_key, {})
+            proj_total    = sum(proj_products.values()) or 1
+            sales_df = get_all_machine_sales(start_dt=mtd_start, end_dt=today_ts)
+            sales_df = sales_df[sales_df["market"] == country_sel] if not sales_df.empty else sales_df
+            split_rows = []
+            for prod, proj_qty in proj_products.items():
+                if proj_qty == 0 and (sales_df.empty or sales_df[sales_df["product"] == prod]["qty"].sum() == 0):
+                    continue
+                actual_qty = int(sales_df[sales_df["product"] == prod]["qty"].sum()) if not sales_df.empty else 0
+                expected = proj_qty * (_days_so_far / _days_in_month)
+                delta = actual_qty - expected
+                actual_pct = (actual_qty / cur_new * 100) if cur_new > 0 else 0
+                proj_pct   = (proj_qty / proj_total * 100)
+                split_rows.append({
+                    "Product":    prod,
+                    "MTD":        f"{actual_qty:,}",
+                    "Pace Δ":     f"{'+' if delta >= 0 else ''}{delta:.0f}",
+                    "Mix %":      f"{actual_pct:.0f}%",
+                    "Proj Mix %": f"{proj_pct:.0f}%",
+                })
+            _split_title = f"{country_sel} PRODUCT MIX"
+            split_df = pd.DataFrame(split_rows)
+
+        st.markdown(
+            f"<div style='font-size:11px; color:#94a3b8; letter-spacing:0.05em; "
+            f"margin:0 0 6px 4px;'>{_split_title}</div>",
+            unsafe_allow_html=True,
+        )
+        if not split_df.empty:
+            st.dataframe(split_df, hide_index=True, use_container_width=True, height=180)
 
 # ── Trailing 7-Day Analysis ───────────────────────────────────────────────────
 st.markdown("---")
