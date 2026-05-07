@@ -30,6 +30,7 @@ from utils import (
     get_all_machine_sales,
     get_fx,
     load_marketing_spend,
+    load_marketing_spend_daily,
     load_projections,
     load_recharge_full,
 )
@@ -124,46 +125,52 @@ def _churned_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> int:
 
 def _marketing_spend_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> float:
     """
-    Day-prorated marketing spend in USD for [start_ts, end_ts] inclusive.
+    Marketing spend in USD for [start_ts, end_ts] inclusive.
 
-    For PAST months: the row holds the final monthly total — divide by
-    days-in-month so each day gets an equal share.
-
-    For the CURRENT month: the row holds cumulative actuals through the
-    last Meta sync (rebuilt 2x/day). It is NOT a full-month projection.
-    Dividing by days-in-month would heavily under-count MTD spend.
-    Instead, divide by days elapsed so far in the month — each day's
-    allocated spend equals the average per-day actual.
+    Strategy: prefer the 'Paid Ads Spend - Daily' tab (true daily actuals
+    per market). Fall back to the monthly Marketing Spend tab proration
+    only for days NOT yet present in the daily tab (e.g. very old history
+    if the daily tab was started later, or future projections).
     """
+    col_by_market = {"UAE": "uae_usd", "KSA": "ksa_usd", "USA": "usa_usd"}
+    col = col_by_market.get(mkt_filter, "total_usd")
+
+    daily = load_marketing_spend_daily()
+    daily_total = 0.0
+    days_covered_by_daily: set = set()
+    if daily is not None and not daily.empty:
+        d = daily[(daily["date"] >= start_ts.normalize())
+                  & (daily["date"] <= end_ts.normalize())]
+        if not d.empty:
+            daily_total = float(d[col].sum())
+            days_covered_by_daily = {ts.normalize() for ts in d["date"]}
+
+    # Fallback: any days in [start, end] that were NOT in the daily tab
+    # use monthly proration (legacy behaviour).
     mkt = load_marketing_spend()
     if mkt is None or mkt.empty:
-        return 0.0
-
-    col_by_market = {
-        "UAE": "uae_usd", "KSA": "ksa_usd", "USA": "usa_usd",
-    }
-    col = col_by_market.get(mkt_filter, "total_usd")
+        return daily_total
 
     month_to_spend = {
         ms: float(spend) if pd.notna(spend) else 0.0
         for ms, spend in zip(mkt["month_dt"], mkt[col])
     }
-
     today_norm           = pd.Timestamp.today().normalize()
     current_month_start  = today_norm.to_period("M").to_timestamp()
-    days_elapsed_current = today_norm.day  # 1-indexed: May 2 → 2
+    days_elapsed_current = today_norm.day
 
-    total = 0.0
-    days = pd.date_range(start_ts.normalize(), end_ts.normalize(), freq="D")
-    for day in days:
+    fallback = 0.0
+    for day in pd.date_range(start_ts.normalize(), end_ts.normalize(), freq="D"):
+        if day in days_covered_by_daily:
+            continue
         month_start  = day.to_period("M").to_timestamp()
         spend_for_mo = month_to_spend.get(month_start, 0.0)
         if month_start == current_month_start:
             divisor = max(days_elapsed_current, 1)
         else:
             divisor = (month_start + pd.offsets.MonthEnd(0)).day
-        total += spend_for_mo / divisor
-    return total
+        fallback += spend_for_mo / divisor
+    return daily_total + fallback
 
 
 def _delta_pct(cur_val: float, prev_val: float) -> float | None:

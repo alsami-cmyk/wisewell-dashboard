@@ -57,6 +57,7 @@ RAW_TABS = [
     "Marketing Spend",
     "Meta Ads Daily - Claude",
     "Meta Ads Campaign Daily - Claude",
+    "Paid Ads Spend - Daily",
     "Shopify Website - UAE", "Shopify Website - KSA", "Shopify Website - USA",
     "Sessions by Source - Daily",
     "Top Landing Pages - Daily",
@@ -689,6 +690,51 @@ def load_marketing_spend() -> pd.DataFrame:
     df["total_usd"] = df["uae_usd"] + df["ksa_usd"] + df["usa_usd"]
 
     return df[["month_dt", "total_usd", "uae_usd", "ksa_usd", "usa_usd"]].sort_values("month_dt").reset_index(drop=True)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_marketing_spend_daily() -> pd.DataFrame:
+    """
+    'Paid Ads Spend - Daily' tab → daily blended ad spend in USD per market.
+    Same column schema as Marketing Spend but one row per day.
+
+    Returns: date (Timestamp), total_usd, uae_usd, ksa_usd, usa_usd
+
+    Use this in preference to the monthly-prorated load_marketing_spend()
+    for sub-month windows (MTD, trailing 7d, day-by-day charts).
+    """
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    rows = raw_data.get("Paid Ads Spend - Daily", [])
+    df   = _rows_to_df(rows)
+    empty = pd.DataFrame(columns=["date", "total_usd", "uae_usd", "ksa_usd", "usa_usd"])
+    if df.empty:
+        return empty
+
+    date_col = df.columns[0]
+    df["date"] = pd.to_datetime(df[date_col].astype(str).str.strip(),
+                                format="%d %b, %Y", errors="coerce")
+    # Fallback parser for any rows that don't match "1 Mar, 2023" format
+    bad = df["date"].isna()
+    if bad.any():
+        df.loc[bad, "date"] = pd.to_datetime(df.loc[bad, date_col], errors="coerce")
+    df = df[df["date"].notna()].copy()
+    if df.empty:
+        return empty
+
+    def _spend(label: str) -> pd.Series:
+        col = next((c for c in df.columns if c.strip().lower() == label.lower()), None)
+        if not col:
+            return pd.Series(0.0, index=df.index)
+        return pd.to_numeric(
+            df[col].astype(str).str.replace(r"[$,\s]", "", regex=True), errors="coerce"
+        ).fillna(0.0)
+
+    df["uae_usd"] = _spend("UAE")
+    df["ksa_usd"] = _spend("KSA")
+    df["usa_usd"] = _spend("USA")
+    df["total_usd"] = df["uae_usd"] + df["ksa_usd"] + df["usa_usd"]
+
+    return df[["date", "total_usd", "uae_usd", "ksa_usd", "usa_usd"]].sort_values("date").reset_index(drop=True)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
