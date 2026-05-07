@@ -678,10 +678,15 @@ def load_marketing_spend() -> pd.DataFrame:
             df[col].astype(str).str.replace(r"[$,\s]", "", regex=True), errors="coerce"
         ).fillna(0.0)
 
-    df["total_usd"] = _spend("Total Spend")
     df["uae_usd"]   = _spend("UAE")
     df["ksa_usd"]   = _spend("KSA")
     df["usa_usd"]   = _spend("USA")
+
+    # Derive total from per-market columns to be robust against a stale or
+    # under-summed "Total Spend" column (e.g. when USA spend is added but the
+    # Total formula isn't updated). The per-market columns are the source of
+    # truth.
+    df["total_usd"] = df["uae_usd"] + df["ksa_usd"] + df["usa_usd"]
 
     return df[["month_dt", "total_usd", "uae_usd", "ksa_usd", "usa_usd"]].sort_values("month_dt").reset_index(drop=True)
 
