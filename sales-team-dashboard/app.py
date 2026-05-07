@@ -30,8 +30,9 @@ st.set_page_config(
 SALES_SHEET_ID = "1zvnS62G88U17sxru4zTVrnzaORL0H4Am-T3Witxe_2M"
 AGENTS         = ["Paloma", "Omar", "Yasmina"]
 AGENT_COLOR    = {"Paloma": "#7c6dfa", "Omar": "#00d4a0", "Yasmina": "#ff6b9d"}
-SCOPES         = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-DEFAULT_TARGET = 350
+SCOPES              = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+DEFAULT_TARGET      = 350
+INBOUND_TAB         = "Inbound Queries"
 
 # ── Shared CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -168,6 +169,52 @@ def load_sales_data() -> pd.DataFrame:
     return df.loc[valid, ["date", "agent", "product", "order_type", "order_num"]].reset_index(drop=True)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def load_inbound_data() -> pd.DataFrame:
+    """Fetch 'Inbound Queries' tab → daily date + total inbound DataFrame."""
+    creds = _get_credentials()
+    svc   = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    try:
+        rows = (
+            svc.spreadsheets().values()
+            .get(spreadsheetId=SALES_SHEET_ID, range=f"'{INBOUND_TAB}'")
+            .execute()
+            .get("values", [])
+        )
+    except Exception as exc:
+        st.warning(f"⚠️ Could not load Inbound Queries tab: {exc}")
+        return pd.DataFrame()
+
+    if len(rows) < 2:
+        return pd.DataFrame()
+
+    max_cols = max(len(r) for r in rows)
+    padded   = [r + [""] * (max_cols - len(r)) for r in rows]
+    df       = pd.DataFrame(padded[1:], columns=[c.strip() for c in padded[0]])
+
+    # Find date and total columns
+    date_col  = next((c for c in df.columns if c.strip() == ""), df.columns[0])  # first col is blank-header date
+    # Use positional: col 0 = date, col -1 = Total
+    df.columns = [c if c.strip() else ("date_raw" if i == 0 else f"col_{i}")
+                  for i, c in enumerate(df.columns)]
+    total_col = next((c for c in df.columns if "total" in c.lower()), None)
+    if not total_col:
+        # last column
+        total_col = df.columns[-1]
+
+    raw    = df["date_raw"].astype(str).str.strip()
+    parsed = pd.to_datetime(raw, format="%d %b, %Y", errors="coerce")
+    still  = parsed.isna() & raw.ne("") & raw.ne("nan")
+    if still.any():
+        parsed[still] = pd.to_datetime(raw[still], errors="coerce")
+    df["date"] = parsed.dt.normalize()
+
+    df["total"] = pd.to_numeric(df[total_col].astype(str).str.replace(",", ""), errors="coerce").fillna(0).astype(int)
+
+    valid = df["date"].notna() & (df["total"] > 0)
+    return df.loc[valid, ["date", "total"]].reset_index(drop=True)
+
+
 def _rgba(hex_color: str, alpha: float = 0.1) -> str:
     h = hex_color.lstrip("#")
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
@@ -186,6 +233,11 @@ except Exception as exc:
 if df_all.empty:
     st.warning("No sales records found in the tracker.")
     st.stop()
+
+try:
+    df_inbound = load_inbound_data()
+except Exception:
+    df_inbound = pd.DataFrame()
 
 # ── Available months (for sidebar filter) ─────────────────────────────────────
 today = pd.Timestamp.today().normalize()
@@ -306,6 +358,19 @@ team_prev   = sum(s["prev_cnt"] for s in agent_stats.values())
 team_target = monthly_target
 team_pct    = team_total / team_target * 100 if team_target > 0 else 0
 
+# ── Inbound queries for selected month ────────────────────────────────────────
+if not df_inbound.empty:
+    month_inbound = df_inbound[
+        (df_inbound["date"].dt.year  == sel_year) &
+        (df_inbound["date"].dt.month == sel_month)
+    ].copy()
+    month_inbound_total = int(month_inbound["total"].sum())
+else:
+    month_inbound       = pd.DataFrame()
+    month_inbound_total = 0
+
+conv_rate = (team_total / month_inbound_total * 100) if month_inbound_total > 0 else None
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HEADER
@@ -338,12 +403,15 @@ st.markdown("---")
 # ══════════════════════════════════════════════════════════════════════════════
 # TEAM KPIs
 # ══════════════════════════════════════════════════════════════════════════════
-k1, k2, k3, k4 = st.columns(4)
+k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("Team Sales (MTD)",   f"{team_total:,}",
           delta=f"{team_total - team_prev:+,} vs same point last month")
-k2.metric("Team Target",        f"{team_target:,}")
-k3.metric("% to Target",        f"{team_pct:.1f}%")
-k4.metric("Days Remaining",     f"{days_left} of {days_in_month}")
+k2.metric("Conversion Rate",
+          f"{conv_rate:.1f}%" if conv_rate is not None else "—",
+          help="Team sales ÷ total inbound queries for the month")
+k3.metric("Team Target",        f"{team_target:,}")
+k4.metric("% to Target",        f"{team_pct:.1f}%")
+k5.metric("Days Remaining",     f"{days_left} of {days_in_month}")
 
 st.markdown(
     f"""<div style="margin:10px 0 4px;">
@@ -501,6 +569,65 @@ with c_lb:
             </div>""",
             unsafe_allow_html=True,
         )
+
+# ── Conversion Rate Over Time ─────────────────────────────────────────────────
+if not month_inbound.empty and month_inbound_total > 0:
+    st.markdown(
+        '<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;'
+        f'letter-spacing:1.2px;color:#94a3b8;margin-bottom:4px;">'
+        f'Conversion Rate Over Time — {selected_month_label}</p>',
+        unsafe_allow_html=True,
+    )
+
+    # Build daily cumulative sales (team) and cumulative inbound for the month
+    chart_end_cr = month_end if days_left == 0 else today
+    all_days_cr  = pd.DataFrame({"date": pd.date_range(month_start, chart_end_cr, freq="D")})
+
+    # Daily sales (team total)
+    daily_sales = month_df.groupby("date").size().reset_index(name="sales")
+    daily_cr    = all_days_cr.merge(daily_sales, on="date", how="left").fillna(0)
+    daily_cr["sales"] = daily_cr["sales"].astype(int)
+
+    # Daily inbound
+    daily_cr = daily_cr.merge(month_inbound[["date", "total"]].rename(columns={"total": "inbound"}),
+                               on="date", how="left").fillna(0)
+    daily_cr["inbound"] = daily_cr["inbound"].astype(int)
+
+    # Cumulative
+    daily_cr["cum_sales"]   = daily_cr["sales"].cumsum()
+    daily_cr["cum_inbound"] = daily_cr["inbound"].cumsum()
+
+    # Conversion rate: only where cumulative inbound > 0
+    daily_cr["conv_rate"] = daily_cr.apply(
+        lambda r: r["cum_sales"] / r["cum_inbound"] * 100 if r["cum_inbound"] > 0 else None,
+        axis=1,
+    )
+    cr_plot = daily_cr.dropna(subset=["conv_rate"])
+
+    fig_cr = go.Figure()
+    fig_cr.add_trace(go.Scatter(
+        x=cr_plot["date"].dt.strftime("%-d %b").tolist(),
+        y=cr_plot["conv_rate"].tolist(),
+        mode="lines+markers",
+        marker=dict(size=4, color="#7c6dfa"),
+        line=dict(color="#7c6dfa", width=2.5),
+        fill="tozeroy",
+        fillcolor="rgba(124,109,250,0.08)",
+        hovertemplate="<b>%{x}</b> · Conv. rate: %{y:.1f}%<extra></extra>",
+        name="Conversion Rate",
+    ))
+    fig_cr.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        height=220,
+        showlegend=False,
+        xaxis=dict(tickfont=dict(size=9, color="#94a3b8"), showgrid=False, zeroline=False),
+        yaxis=dict(tickfont=dict(size=9, color="#94a3b8"), showgrid=True,
+                   gridcolor="rgba(0,0,0,0.05)", zeroline=False,
+                   ticksuffix="%"),
+        margin=dict(t=12, b=8, l=4, r=8),
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig_cr, use_container_width=True)
 
 st.markdown("---")
 
