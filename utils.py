@@ -54,7 +54,7 @@ RAW_TABS = [
     "Recharge - UAE", "Recharge - KSA", "Recharge - USA",
     "Shopify - UAE",  "Shopify - KSA",  "Shopify - USA",
     "Offline - Subscriptions", "Offline - Ownership", "Returns",
-    "Marketing Spend",
+    "Paid Ads Spend - Monthly",
     "Meta Ads Daily - Claude",
     "Meta Ads Campaign Daily - Claude",
     "Paid Ads Spend - Daily",
@@ -652,11 +652,12 @@ def load_offline_returns() -> pd.DataFrame:
 @st.cache_data(ttl=300, show_spinner=False)
 def load_marketing_spend() -> pd.DataFrame:
     """
-    Marketing Spend tab → monthly spend in USD.
+    'Paid Ads Spend - Monthly' tab (formerly 'Marketing Spend') → monthly spend in USD.
     Returns: month_dt, total_usd, uae_usd, ksa_usd, usa_usd
     """
     raw_data, _errors, _elapsed = _fetch_all_tabs()
-    rows = raw_data.get("Marketing Spend", [])
+    # Tolerate the legacy "Marketing Spend" name in case the rename gets reversed
+    rows = raw_data.get("Paid Ads Spend - Monthly") or raw_data.get("Marketing Spend") or []
     df   = _rows_to_df(rows)
     empty = pd.DataFrame(columns=["month_dt", "total_usd", "uae_usd", "ksa_usd", "usa_usd"])
     if df.empty:
