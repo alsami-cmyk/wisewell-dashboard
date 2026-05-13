@@ -88,6 +88,20 @@ CATEGORY_COLOR = {"Machine": "#0ea5e9", "Filter": "#10b981"}
 MARKET_COLOR   = {"UAE": "#6366f1", "KSA": "#f59e0b", "USA": "#10b981"}
 FX_FALLBACK    = {"AED": 1 / 3.6725, "SAR": 1 / 3.75, "USD": 1.0}
 
+# ── USA verified-only override ────────────────────────────────────────────────
+# As of 2026-05-08 we determined that ~94% of USA Recharge orders are fraudulent
+# (scammers exploiting the first-month-free promotion). Until further notice,
+# all raw USA Recharge data is DISCARDED and replaced with a manually-verified
+# list maintained in an external sheet. This is a temporary measure.
+US_VERIFIED_SHEET_ID = "17UMgAdech2G0ff2Lzu8-xi3s1EjEkXrtxMjh4rLgARU"
+US_VERIFIED_TAB      = "CLEAN LIST"
+# USA subscription pricing (USD/month) — hardcoded since the verified sheet
+# only has product names, not prices.
+US_PRICE_MAP = {
+    "Wisewell Model 1": 69.0,
+    "Wisewell Nano":    49.0,
+}
+
 # Shopify ownership unit columns: (product_name, column_header)
 SHOPIFY_OWN_COLS = [
     ("Model 1",   "Units - Model 1 (Own)"),
@@ -394,6 +408,125 @@ def _fetch_all_tabs() -> tuple[dict[str, list], dict[str, str], float]:
 # ── Raw data loaders ──────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=300, show_spinner=False)
+def load_us_verified_subscriptions() -> pd.DataFrame:
+    """
+    Load the manually-verified USA subscription list from CLEAN LIST.
+
+    Returns a DataFrame in the same schema as load_recharge_full() so it can
+    be concatenated directly. Only rows whose Status normalises to "VALIDATED"
+    (also tolerating the "Vaildated" typo) are kept.
+
+    Columns returned:
+      subscription_id, customer_email, status, product_title,
+      recurring_price, quantity, charge_interval_frequency,
+      created_at_dt, cancelled_at_dt, is_true_cancel, cancellation_reason,
+      market, currency, category, product, arr_local
+    """
+    creds = get_credentials()
+    try:
+        svc  = build("sheets", "v4", credentials=creds, cache_discovery=False)
+        rows = (
+            svc.spreadsheets().values()
+            .get(spreadsheetId=US_VERIFIED_SHEET_ID, range=f"'{US_VERIFIED_TAB}'")
+            .execute()
+            .get("values", [])
+        )
+    except Exception as exc:
+        logger.warning("load_us_verified_subscriptions: fetch failed: %s", exc)
+        rows = []
+
+    df = _rows_to_df(rows)
+    if df.empty:
+        return pd.DataFrame(columns=[
+            "subscription_id", "customer_email", "status", "product_title",
+            "recurring_price", "quantity", "charge_interval_frequency",
+            "created_at_dt", "cancelled_at_dt", "is_true_cancel",
+            "cancellation_reason", "market", "currency", "category",
+            "product", "arr_local",
+        ])
+
+    # Normalise column names (case-insensitive lookup)
+    df.columns = [c.strip() for c in df.columns]
+    cmap = {c.lower(): c for c in df.columns}
+
+    def _col(*candidates: str) -> str | None:
+        for cand in candidates:
+            if cand.lower() in cmap:
+                return cmap[cand.lower()]
+        return None
+
+    status_col = _col("Status")
+    prod_col   = _col("Product Model", "Product", "Product Title")
+    date_col   = _col("Order Date", "subscription_activation_date",
+                      "Created At", "Activation Date")
+    sub_col    = _col("Subscription ID", "subscription_id")
+    cust_col   = _col("Customer ID", "customer_id")
+    email_col  = _col("Customer email", "Email", "customer_email")
+
+    if status_col is None or prod_col is None or date_col is None:
+        logger.warning(
+            "load_us_verified_subscriptions: missing required column "
+            "(status=%s, product=%s, date=%s)", status_col, prod_col, date_col,
+        )
+        return pd.DataFrame()
+
+    # Filter to validated rows (tolerate the "Vaildated" typo we've seen)
+    status_norm = df[status_col].fillna("").astype(str).str.strip().str.upper()
+    valid_mask = status_norm.isin({"VALIDATED", "VAILDATED"})
+
+    # Date must be parseable
+    parsed_date = _parse_dates(df[date_col])
+    valid_mask = valid_mask & parsed_date.notna()
+
+    # Subscription ID (or at least the product+date) must be present
+    if sub_col:
+        sub_series = df[sub_col].fillna("").astype(str).str.strip()
+    else:
+        sub_series = pd.Series([""] * len(df), index=df.index)
+
+    df = df[valid_mask].copy()
+    if df.empty:
+        logger.info("load_us_verified_subscriptions: 0 verified rows")
+        return pd.DataFrame()
+
+    parsed_date = parsed_date[valid_mask]
+    sub_series  = sub_series[valid_mask]
+
+    # Build output frame
+    out = pd.DataFrame(index=df.index)
+    out["subscription_id"]            = sub_series
+    out["customer_email"]             = df[email_col].astype(str).str.strip() if email_col else ""
+    out["status"]                     = "ACTIVE"
+    out["product_title"]              = df[prod_col].astype(str).str.strip()
+    out["recurring_price"]            = out["product_title"].map(US_PRICE_MAP).fillna(0.0)
+    out["quantity"]                   = 1
+    out["charge_interval_frequency"]  = 1.0
+    out["created_at_dt"]              = parsed_date.values
+    out["cancelled_at_dt"]            = pd.NaT
+    out["is_true_cancel"]             = False
+    out["cancellation_reason"]        = "Not Specified"
+    out["market"]                     = "USA"
+    out["currency"]                   = "USD"
+
+    classified = out["product_title"].map(_classify_recharge_product)
+    out["category"] = classified.map(lambda x: x[0] if x else None)
+    out["product"]  = classified.map(lambda x: x[1] if x else None)
+
+    # ARR for ACTIVE machine subs
+    out["arr_local"] = out.apply(
+        lambda r: (
+            r["recurring_price"] * r["quantity"] * (12.0 / r["charge_interval_frequency"])
+        ) if r["category"] == "Machine" else 0.0,
+        axis=1,
+    )
+
+    logger.info(
+        "load_us_verified_subscriptions: %d verified USA rows loaded", len(out)
+    )
+    return out.reset_index(drop=True)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def load_recharge_full() -> pd.DataFrame:
     """
     All Recharge rows from UAE + KSA + USA.
@@ -505,7 +638,25 @@ def load_recharge_full() -> pd.DataFrame:
         "is_true_cancel", "cancellation_reason",
         "market", "currency", "category", "product", "arr_local",
     ]
-    return df[[c for c in keep if c in df.columns]].copy()
+    df = df[[c for c in keep if c in df.columns]].copy()
+
+    # ── USA verified-only override ────────────────────────────────────────
+    # Strip raw USA Recharge rows (assumed fraudulent until verified) and
+    # replace with the manually-verified CLEAN LIST. See header comment near
+    # US_VERIFIED_SHEET_ID for context. Temporary measure as of 2026-05-08.
+    _usa_raw_count = int((df["market"] == "USA").sum()) if "market" in df.columns else 0
+    df = df[df["market"] != "USA"].copy()
+    us_verified = load_us_verified_subscriptions()
+    if not us_verified.empty:
+        # Align columns to df schema
+        us_verified = us_verified[[c for c in keep if c in us_verified.columns]].copy()
+        df = pd.concat([df, us_verified], ignore_index=True)
+    logger.info(
+        "load_recharge_full: USA override — dropped %d raw rows, added %d verified rows",
+        _usa_raw_count, len(us_verified),
+    )
+
+    return df
 
 
 @st.cache_data(ttl=300, show_spinner=False)

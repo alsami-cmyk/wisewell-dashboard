@@ -37,6 +37,16 @@ from utils import (
 
 st.markdown("## 🎯 Executive summary")
 
+# ── USA verified-only notice ──────────────────────────────────────────────────
+# Temporary measure (since 2026-05-08): all raw USA Recharge orders are
+# discarded as presumed fraudulent and replaced with a manually-verified list.
+st.info(
+    "⚠️ **USA data — verified orders only.** Raw USA Recharge sales are "
+    "currently excluded due to a fraudulent first-month-free promo. Only "
+    "manually-verified subscriptions are shown. Churn is paused for USA.",
+    icon="ℹ️",
+)
+
 # ── Global country filter ─────────────────────────────────────────────────────
 country_sel = st.selectbox(
     "Country",
