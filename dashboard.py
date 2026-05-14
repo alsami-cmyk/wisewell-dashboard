@@ -3,11 +3,10 @@ Wisewell Dashboard — entry point.
 Renders the shared sidebar and routes to pages.
 """
 
-# Streamlit hot-reload re-runs this script without restarting Python, which can
-# leave a stale version of utils in sys.modules. Evicting it here forces a fresh
-# import every time so the latest function definitions are always used.
-import sys
-sys.modules.pop("utils", None)
+# NOTE: Do NOT do `sys.modules.pop("utils", None)` here. It races with Python's
+# import system on Streamlit Cloud (Python 3.14) and intermittently crashes
+# the page with `KeyError: 'utils'`. Module freshness on redeploys is handled
+# by Streamlit Cloud restarting the process — the pop was never necessary.
 
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
