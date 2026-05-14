@@ -407,6 +407,20 @@ def _fetch_all_tabs() -> tuple[dict[str, list], dict[str, str], float]:
 
 # ── Raw data loaders ──────────────────────────────────────────────────────────
 
+_US_VERIFIED_EMPTY_SCHEMA = [
+    "subscription_id", "customer_email", "status", "product_title",
+    "recurring_price", "quantity", "charge_interval_frequency",
+    "created_at_dt", "cancelled_at_dt", "is_true_cancel",
+    "cancellation_reason", "market", "currency", "category",
+    "product", "arr_local",
+]
+
+
+def _empty_us_verified() -> pd.DataFrame:
+    """Empty frame in the load_recharge_full schema (for safe concat fallback)."""
+    return pd.DataFrame(columns=_US_VERIFIED_EMPTY_SCHEMA)
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_us_verified_subscriptions() -> pd.DataFrame:
     """
@@ -416,34 +430,61 @@ def load_us_verified_subscriptions() -> pd.DataFrame:
     be concatenated directly. Only rows whose Status normalises to "VALIDATED"
     (also tolerating the "Vaildated" typo) are kept.
 
+    CRITICAL: this function MUST NOT raise. Any failure returns an empty
+    frame so the dashboard keeps rendering. Failures are logged.
+
     Columns returned:
       subscription_id, customer_email, status, product_title,
       recurring_price, quantity, charge_interval_frequency,
       created_at_dt, cancelled_at_dt, is_true_cancel, cancellation_reason,
       market, currency, category, product, arr_local
     """
-    creds = get_credentials()
+    # ── 1. Fetch with retries (mirrors _fetch_single_tab's resilience) ─────
+    rows: list = []
     try:
-        svc  = build("sheets", "v4", credentials=creds, cache_discovery=False)
-        rows = (
-            svc.spreadsheets().values()
-            .get(spreadsheetId=US_VERIFIED_SHEET_ID, range=f"'{US_VERIFIED_TAB}'")
-            .execute()
-            .get("values", [])
-        )
+        creds = get_credentials()
     except Exception as exc:
-        logger.warning("load_us_verified_subscriptions: fetch failed: %s", exc)
-        rows = []
+        logger.warning("load_us_verified_subscriptions: get_credentials failed: %s", exc)
+        return _empty_us_verified()
 
+    for attempt in range(MAX_RETRIES):
+        try:
+            svc  = build("sheets", "v4", credentials=creds, cache_discovery=False)
+            rows = (
+                svc.spreadsheets().values()
+                .get(spreadsheetId=US_VERIFIED_SHEET_ID, range=f"'{US_VERIFIED_TAB}'")
+                .execute()
+                .get("values", [])
+            )
+            break
+        except Exception as exc:
+            wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+            logger.warning(
+                "load_us_verified_subscriptions: retry %d/%d (%s)",
+                attempt + 1, MAX_RETRIES, exc,
+            )
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(wait)
+            else:
+                logger.error(
+                    "load_us_verified_subscriptions: gave up after %d retries — "
+                    "returning empty frame", MAX_RETRIES,
+                )
+                return _empty_us_verified()
+
+    # ── 2. Parse rows defensively ──────────────────────────────────────────
+    try:
+        return _parse_us_verified_rows(rows)
+    except Exception as exc:
+        logger.exception("load_us_verified_subscriptions: parse failed: %s", exc)
+        return _empty_us_verified()
+
+
+def _parse_us_verified_rows(rows: list) -> pd.DataFrame:
+    """Internal parser — separated so the outer function can wrap exceptions."""
     df = _rows_to_df(rows)
     if df.empty:
-        return pd.DataFrame(columns=[
-            "subscription_id", "customer_email", "status", "product_title",
-            "recurring_price", "quantity", "charge_interval_frequency",
-            "created_at_dt", "cancelled_at_dt", "is_true_cancel",
-            "cancellation_reason", "market", "currency", "category",
-            "product", "arr_local",
-        ])
+        return _empty_us_verified()
 
     # Normalise column names (case-insensitive lookup)
     df.columns = [c.strip() for c in df.columns]
@@ -468,7 +509,7 @@ def load_us_verified_subscriptions() -> pd.DataFrame:
             "load_us_verified_subscriptions: missing required column "
             "(status=%s, product=%s, date=%s)", status_col, prod_col, date_col,
         )
-        return pd.DataFrame()
+        return _empty_us_verified()
 
     # Filter to validated rows (tolerate the "Vaildated" typo we've seen)
     status_norm = df[status_col].fillna("").astype(str).str.strip().str.upper()
@@ -487,7 +528,7 @@ def load_us_verified_subscriptions() -> pd.DataFrame:
     df = df[valid_mask].copy()
     if df.empty:
         logger.info("load_us_verified_subscriptions: 0 verified rows")
-        return pd.DataFrame()
+        return _empty_us_verified()
 
     parsed_date = parsed_date[valid_mask]
     sub_series  = sub_series[valid_mask]
@@ -644,17 +685,35 @@ def load_recharge_full() -> pd.DataFrame:
     # Strip raw USA Recharge rows (assumed fraudulent until verified) and
     # replace with the manually-verified CLEAN LIST. See header comment near
     # US_VERIFIED_SHEET_ID for context. Temporary measure as of 2026-05-08.
-    _usa_raw_count = int((df["market"] == "USA").sum()) if "market" in df.columns else 0
-    df = df[df["market"] != "USA"].copy()
-    us_verified = load_us_verified_subscriptions()
-    if not us_verified.empty:
-        # Align columns to df schema
-        us_verified = us_verified[[c for c in keep if c in us_verified.columns]].copy()
-        df = pd.concat([df, us_verified], ignore_index=True)
-    logger.info(
-        "load_recharge_full: USA override — dropped %d raw rows, added %d verified rows",
-        _usa_raw_count, len(us_verified),
-    )
+    #
+    # WRAPPED in try/except so any failure here (sheet unavailable, parsing
+    # error, etc.) NEVER takes down the dashboard. Worst case: USA falls
+    # back to the raw Recharge data (less ideal, but page renders).
+    try:
+        _usa_raw_count = int((df["market"] == "USA").sum()) if "market" in df.columns else 0
+        us_verified = load_us_verified_subscriptions()
+        if us_verified is None:
+            us_verified = _empty_us_verified()
+        # Only strip USA rows if we actually got verified data — otherwise
+        # keep raw USA so the dashboard isn't blank.
+        if not us_verified.empty:
+            df = df[df["market"] != "USA"].copy()
+            us_verified = us_verified[[c for c in keep if c in us_verified.columns]].copy()
+            df = pd.concat([df, us_verified], ignore_index=True)
+            logger.info(
+                "load_recharge_full: USA override — dropped %d raw rows, "
+                "added %d verified rows", _usa_raw_count, len(us_verified),
+            )
+        else:
+            logger.warning(
+                "load_recharge_full: USA override SKIPPED — verified list empty "
+                "or unavailable. Falling back to %d raw USA rows.", _usa_raw_count,
+            )
+    except Exception as exc:
+        logger.exception(
+            "load_recharge_full: USA override crashed (%s) — falling back to raw USA",
+            exc,
+        )
 
     return df
 
