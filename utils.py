@@ -1938,6 +1938,77 @@ def get_monthly_sales_blended() -> pd.DataFrame:
     return df.sort_values("month_dt").reset_index(drop=True)
 
 
+def _load_historical_user_base(
+    as_of: pd.Timestamp,
+    kind: str,
+) -> pd.DataFrame:
+    """
+    Read per-(market, product) active counts directly from the Monthly User
+    Base sheet, for the calendar month containing `as_of`.
+
+    Used as the authoritative source for any date BEFORE LIVE_DATA_START
+    (Sep-2025). Recharge alone undercounts historical actives because
+    DELETED rows are stripped on load; and the ownership flow data only
+    starts at Sep-2025, so neither can reconstruct pre-Sep-2025 truth
+    on their own. The Monthly User Base sheet is the manually-maintained
+    ground truth for that period.
+
+    Parameters
+    ----------
+    as_of : pd.Timestamp
+        Any date in the desired month. Snapped to that month's column.
+    kind : str
+        "sub" → uses _HIST_UB_SUB_ROWS (active subscribers).
+        "own" → uses _HIST_UB_OWN_ROWS (active owners).
+
+    Returns
+    -------
+    DataFrame[market, product, qty] — one row per (market, product) with
+    qty > 0. Empty if the column isn't found (e.g. as_of pre-dates the
+    sheet's history).
+
+    Sheet only covers UAE + KSA. USA didn't have ownership/subscriptions
+    pre-2026, so absence of USA rows here is correct.
+    """
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    vals = raw_data.get("Monthly User Base", [])
+    if not vals:
+        return pd.DataFrame(columns=["market", "product", "qty"])
+
+    target = as_of.to_period("M").to_timestamp()
+    header = vals[0] if vals else []
+    target_col = None
+    for i, h in enumerate(header[1:], start=1):
+        try:
+            dt = pd.to_datetime(str(h).strip().replace("'", "-"), format="%b-%y")
+            if dt == target:
+                target_col = i
+                break
+        except Exception:
+            continue
+
+    if target_col is None:
+        logger.warning(
+            "Monthly User Base: no column for %s (kind=%s); returning empty",
+            target.strftime("%b-%y"), kind,
+        )
+        return pd.DataFrame(columns=["market", "product", "qty"])
+
+    row_map = _HIST_UB_SUB_ROWS if kind == "sub" else _HIST_UB_OWN_ROWS
+    records = []
+    for (market, product), row_idx in row_map.items():
+        row = vals[row_idx] if row_idx < len(vals) else []
+        try:
+            raw = str(row[target_col]).replace(",", "").strip() if target_col < len(row) else ""
+            qty = int(float(raw)) if raw else 0
+        except (ValueError, IndexError):
+            qty = 0
+        if qty > 0:
+            records.append((market, product, qty))
+
+    return pd.DataFrame(records, columns=["market", "product", "qty"])
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def get_active_subscriptions(
     as_of: pd.Timestamp | None = None,
@@ -1945,19 +2016,28 @@ def get_active_subscriptions(
     """
     Active machine subscribers at a given point in time.
 
-    Sources combined:
-      - Recharge: created_at <= as_of AND (cancelled_at is null OR > as_of)
-      - Offline - Subscriptions: all rows with date <= as_of are treated
-        as still-active. Offline subs have no cancellation tracking, so
-        until a separate "Offline cancellations" feed exists, they stay
-        in the active count once recorded.
+    Behaviour depends on `as_of`:
 
-    Returns: market, product, qty (int)
-    One row per (market, product). Use .sum() for totals.
+      • as_of < LIVE_DATA_START (Sep-2025): read directly from the
+        Monthly User Base sheet for that month. This is the manually-
+        maintained historical truth — Recharge alone undercounts because
+        DELETED rows get stripped on load.
+
+      • as_of >= LIVE_DATA_START: compute live from raw sources:
+          - Recharge: created_at <= as_of AND (cancelled_at is null OR > as_of)
+          - Offline - Subscriptions: all rows with date <= as_of stay
+            active (no cancellation feed exists for offline subs).
+
+    Returns: market, product, qty (int)  — one row per (market, product).
     """
     as_of = (as_of or pd.Timestamp.today()).normalize()
 
-    # ── Recharge: explicit lifecycle ─────────────────────────────────────────
+    # ── Pre-Sep-2025: authoritative historical sheet ─────────────────────────
+    if as_of < LIVE_DATA_START:
+        return _load_historical_user_base(as_of, kind="sub")
+
+    # ── Sep-2025 onwards: live reconstruction ────────────────────────────────
+    # Recharge: explicit lifecycle
     rc = load_recharge_full()
     rc_grouped = pd.DataFrame(columns=["market", "product", "qty"])
     if not rc.empty:
@@ -2000,16 +2080,29 @@ def get_active_ownership(
     """
     Active ownership users at a given point in time.
 
-    Formula: seed (Aug-2025 from Monthly User Base)
-           + Shopify ownership sales (Sep-2025 → as_of)
-           + Offline ownership (Sep-2025 → as_of)
-           − Returns (Sep-2025 → as_of)
+    Behaviour depends on `as_of`:
 
-    Returns: market, product, qty (int)  (qty can be 0 but not negative)
+      • as_of < LIVE_DATA_START (Sep-2025): read directly from the
+        Monthly User Base sheet for that month. Manually-maintained
+        historical truth — the previous "seed + zero deltas" approach
+        returned the Aug-2025 seed unconditionally for every past
+        month, which is wrong for any date older than Aug-2025.
+
+      • as_of >= LIVE_DATA_START: compute additively:
+          seed (Aug-2025 from Monthly User Base)
+          + Shopify ownership sales (Sep-2025 → as_of)
+          + Offline ownership          (Sep-2025 → as_of)
+          − Returns                    (Sep-2025 → as_of)
+
+    Returns: market, product, qty (int) — qty can be 0 but not negative.
     """
     as_of = (as_of or pd.Timestamp.today()).normalize()
 
-    # Seed
+    # ── Pre-Sep-2025: authoritative historical sheet ─────────────────────────
+    if as_of < LIVE_DATA_START:
+        return _load_historical_user_base(as_of, kind="own")
+
+    # ── Sep-2025 onwards: seed + flows ───────────────────────────────────────
     seed = load_historical_ownership_seed()
     base = seed.copy() if not seed.empty else pd.DataFrame(columns=["market", "product", "qty"])
 
