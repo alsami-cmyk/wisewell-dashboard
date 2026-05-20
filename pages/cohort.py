@@ -26,18 +26,20 @@ st.caption("How many of each month's new subscriptions are still active after N 
 # ── Filter bar ────────────────────────────────────────────────────────────────
 today_d = date.today()
 
-# Build a month/year list spanning the past 36 months up to the current month.
-# User picks from a dropdown in "MMM YYYY" format — no full date picker needed.
-_today_month = pd.Timestamp(today_d).to_period("M").to_timestamp()
-_months      = pd.date_range(
-    _today_month - pd.DateOffset(months=35),
-    _today_month,
-    freq="MS",
-)
-_month_labels = [m.strftime("%b %Y") for m in _months]
-_label_to_ts  = dict(zip(_month_labels, _months))
+# Build a month/year list spanning from company inception (Jan 2023) up to the
+# current month. User picks from a dropdown in "MMM YYYY" format — no full
+# date picker needed. Earlier months exist in Recharge (a handful back to
+# late 2021) but cohort sizes <20 produce noisy retention curves, so we
+# anchor at Jan 2023 when steady monthly volume began.
+_today_month   = pd.Timestamp(today_d).to_period("M").to_timestamp()
+INCEPTION_MONTH = pd.Timestamp("2023-01-01")
+_months        = pd.date_range(INCEPTION_MONTH, _today_month, freq="MS")
+_month_labels  = [m.strftime("%b %Y") for m in _months]
+_label_to_ts   = dict(zip(_month_labels, _months))
 
-# Defaults: last 12 cohort months
+# Defaults: last 12 cohort months (so the page opens to the recent view
+# users care about by default — they can scroll the dropdown back to
+# Jan 2023 for a full-history look).
 default_end_idx   = len(_month_labels) - 1
 default_start_idx = max(0, default_end_idx - 11)
 
