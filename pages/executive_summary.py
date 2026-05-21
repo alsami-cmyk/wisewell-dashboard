@@ -112,8 +112,26 @@ def _arr_usd_at(end_ts: pd.Timestamp) -> float:
 
 
 def _new_sales_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> int:
+    """Gross new machine sales in [start, end] — includes offline deals."""
     s = _apply_mkt(get_all_machine_sales(start_dt=start_ts, end_dt=end_ts))
     return int(s["qty"].sum()) if s is not None and not s.empty else 0
+
+
+def _paid_sales_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> int:
+    """
+    Paid-attributable new sales in [start, end] — EXCLUDES offline.
+
+    Used as the CAC denominator. Offline subscriptions/ownership are
+    typically larger B2B deals not acquired through the paid-ads
+    engine, so they would otherwise inflate the denominator and
+    artificially deflate CAC. (Example: a 58-unit offline B2B deal
+    in May 2026.)
+    """
+    s = _apply_mkt(get_all_machine_sales(start_dt=start_ts, end_dt=end_ts))
+    if s is None or s.empty:
+        return 0
+    s = s[~s["is_offline"]]
+    return int(s["qty"].sum()) if not s.empty else 0
 
 
 def _churned_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> int:
@@ -260,8 +278,11 @@ t7_net             = t7_sales - t7_churn
 t7_prev_net        = t7_prev_sales - t7_prev_churn
 t7_spend           = _marketing_spend_in(t7_start, t7_end)
 t7_prev_spend      = _marketing_spend_in(t7_prev_start, t7_prev_end)
-t7_cac             = (t7_spend / t7_sales)            if t7_sales      > 0 else 0.0
-t7_prev_cac        = (t7_prev_spend / t7_prev_sales)  if t7_prev_sales > 0 else 0.0
+# CAC denominators exclude offline (B2B / direct) deals
+t7_paid_sales      = _paid_sales_in(t7_start, t7_end)
+t7_prev_paid_sales = _paid_sales_in(t7_prev_start, t7_prev_end)
+t7_cac             = (t7_spend / t7_paid_sales)           if t7_paid_sales      > 0 else 0.0
+t7_prev_cac        = (t7_prev_spend / t7_prev_paid_sales) if t7_prev_paid_sales > 0 else 0.0
 
 # Monthly churn rate — denominator is ACTIVE MACHINE SUBS only,
 # matching the convention on the Retention page.
@@ -285,11 +306,14 @@ else:
 prev_churn_rate = (prev_full_churn / active_subs_prev_full_start) \
                   if active_subs_prev_full_start > 0 else 0.0
 
-# CAC MTD
-cur_spend   = _marketing_spend_in(mtd_start, today_ts)
-prev_spend  = _marketing_spend_in(prev_start, prev_end)
-cur_cac  = (cur_spend / cur_new)   if cur_new  > 0 else 0.0
-prev_cac = (prev_spend / prev_new) if prev_new > 0 else 0.0
+# CAC MTD — denominator excludes offline (B2B / direct) deals so a big
+# offline sale doesn't artificially deflate the cost-per-acquisition.
+cur_spend       = _marketing_spend_in(mtd_start, today_ts)
+prev_spend      = _marketing_spend_in(prev_start, prev_end)
+cur_paid_new    = _paid_sales_in(mtd_start, today_ts)
+prev_paid_new   = _paid_sales_in(prev_start, prev_end)
+cur_cac  = (cur_spend / cur_paid_new)   if cur_paid_new  > 0 else 0.0
+prev_cac = (prev_spend / prev_paid_new) if prev_paid_new > 0 else 0.0
 
 # ── Row 1: Headline KPIs ──────────────────────────────────────────────────────
 st.markdown("---")
@@ -347,10 +371,14 @@ k6.metric(
     delta=_fmt_delta(_delta_pct(cur_cac, prev_cac)),
     delta_color="inverse",
     help=(
-        f"Blended CAC = marketing spend ÷ new machine sales for "
-        f"{mtd_start:%d %b}–{today_ts:%d %b}. Compared to same {days_into_month}-day "
-        f"window of prior month ({prev_start:%d %b}–{prev_end:%d %b}). "
-        f"Per-market spend pulled from Marketing Spend tab (UAE / KSA / USA columns)."
+        f"Blended CAC = marketing spend ÷ paid-attributable new machine sales "
+        f"for {mtd_start:%d %b}–{today_ts:%d %b} "
+        f"(MTD denominator: {cur_paid_new:,} paid sales). "
+        f"Offline subs/ownership (B2B / direct) are excluded since they "
+        f"aren't acquired through paid ads. Compared to same "
+        f"{days_into_month}-day window of prior month "
+        f"({prev_start:%d %b}–{prev_end:%d %b}). Per-market spend pulled "
+        f"from Paid Ads Spend tabs (UAE / KSA / USA columns)."
     ),
 )
 
@@ -534,8 +562,10 @@ t4.metric(
     fmt_usd(t7_cac) if t7_cac > 0 else "—",
     delta=_fmt_delta(_delta_pct(t7_cac, t7_prev_cac)),
     delta_color="inverse",
-    help="Marketing spend (day-prorated) ÷ new machine sales over the trailing 7 days. "
-         "Spend prorates each month's total by day count.",
+    help="Marketing spend (day-prorated) ÷ paid-attributable new machine "
+         "sales over the trailing 7 days. Offline (B2B / direct) sales "
+         "are excluded from the denominator since they aren't acquired "
+         "through paid ads.",
 )
 
 # ── Growth: ARR + Monthly Sales over time ─────────────────────────────────────
@@ -665,9 +695,10 @@ today_ts_norm     = pd.Timestamp(today_d)
 for i, (ms, mp) in enumerate(zip(month_starts, measure_points)):
     ms_ts = pd.Timestamp(ms)
     mp_ts = pd.Timestamp(mp)
-    sales_mo  = sales_series[i]
-    spend_mo  = _marketing_spend_in(ms_ts, mp_ts)
-    cac_series.append(spend_mo / sales_mo if sales_mo > 0 else None)
+    # CAC denominator excludes offline (B2B / direct) deals
+    paid_sales_mo = _paid_sales_in(ms_ts, mp_ts)
+    spend_mo      = _marketing_spend_in(ms_ts, mp_ts)
+    cac_series.append(spend_mo / paid_sales_mo if paid_sales_mo > 0 else None)
 
     churned_mo      = _churned_in(ms_ts, mp_ts)
     active_subs_mo  = _active_machine_subs_at(ms_ts)
