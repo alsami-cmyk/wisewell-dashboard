@@ -562,7 +562,7 @@ def _load_apr_clean_list() -> pd.DataFrame:
         out["recurring_price"]            = out["product_title"].map(US_PRICE_MAP).fillna(0.0)
         out["quantity"]                   = 1
         out["charge_interval_frequency"]  = 1.0
-        out["created_at_dt"]              = parsed_date.values
+        out["created_at_dt"]              = pd.to_datetime(parsed_date.values).normalize()
         out["cancelled_at_dt"]            = pd.NaT
         out["is_true_cancel"]             = False
         out["cancellation_reason"]        = "Not Specified"
@@ -653,8 +653,10 @@ def _load_recharge_schema_usa_tab(tab_name: str,
         out["charge_interval_frequency"] = pd.to_numeric(df[freq_col], errors="coerce").fillna(1.0).apply(
             lambda x: 1.0 if x == 30 else float(x or 1.0)
         ) if freq_col else 1.0
-        out["created_at_dt"]   = parsed_created.values
-        out["cancelled_at_dt"] = parsed_cancel.values
+        # Normalise to midnight to match Recharge UAE/KSA tabs — same-day
+        # filters (e.g. "Today's Sales") rely on midnight semantics.
+        out["created_at_dt"]   = pd.to_datetime(parsed_created.values).normalize()
+        out["cancelled_at_dt"] = pd.to_datetime(parsed_cancel.values).normalize() if parsed_cancel.notna().any() else parsed_cancel.values
         out["is_true_cancel"]  = is_cancelled.values
         out["cancellation_reason"] = "Not Specified"
         out["market"]          = "USA"

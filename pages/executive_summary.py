@@ -124,6 +124,210 @@ def _paid_sales_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> int:
     return int(s["qty"].sum()) if not s.empty else 0
 
 
+# ── Market-aware helpers (used by the GCC vs USA landing-page KPIs) ──────────
+# These IGNORE the global country dropdown — the new headline KPIs at the top
+# of the page always show GCC (UAE + KSA) vs USA explicitly. The dropdown still
+# affects everything from "Growth: ARR and Monthly Sales" downwards.
+
+GCC_MARKETS = ["UAE", "KSA"]
+USA_MARKETS = ["USA"]
+ALL_MARKETS = ["UAE", "KSA", "USA"]
+
+
+def _filter_markets(df: pd.DataFrame, markets: list[str]) -> pd.DataFrame:
+    if df is None or df.empty or "market" not in df.columns:
+        return df if df is not None else pd.DataFrame()
+    return df[df["market"].isin(markets)]
+
+
+def _new_sales_markets(start_ts: pd.Timestamp, end_ts: pd.Timestamp,
+                       markets: list[str]) -> int:
+    s = _filter_markets(get_all_machine_sales(start_dt=start_ts, end_dt=end_ts), markets)
+    return int(s["qty"].sum()) if not s.empty else 0
+
+
+def _paid_sales_markets(start_ts: pd.Timestamp, end_ts: pd.Timestamp,
+                        markets: list[str]) -> int:
+    s = _filter_markets(get_all_machine_sales(start_dt=start_ts, end_dt=end_ts), markets)
+    if s.empty:
+        return 0
+    s = s[~s["is_offline"]]
+    return int(s["qty"].sum()) if not s.empty else 0
+
+
+def _churned_markets(start_ts: pd.Timestamp, end_ts: pd.Timestamp,
+                     markets: list[str]) -> int:
+    rc = load_recharge_full()
+    if rc.empty:
+        return 0
+    rc = rc[(rc["category"] == "Machine") & rc["market"].isin(markets)]
+    if rc.empty:
+        return 0
+    mask = (
+        rc["is_true_cancel"]
+        & rc["cancelled_at_dt"].notna()
+        & (rc["cancelled_at_dt"] >= start_ts)
+        & (rc["cancelled_at_dt"] <= end_ts)
+    )
+    return int(rc.loc[mask, "quantity"].sum())
+
+
+def _arr_added_markets(start_ts: pd.Timestamp, end_ts: pd.Timestamp,
+                       markets: list[str]) -> float:
+    """
+    Annualised value of NEW Machine + Filter subs created in [start, end].
+    Doesn't subtract churn — pure additions.
+    """
+    rc = load_recharge_full()
+    if rc.empty:
+        return 0.0
+    rc = rc[rc["market"].isin(markets)]
+    if rc.empty:
+        return 0.0
+    mask = (
+        rc["category"].isin(["Machine", "Filter"])
+        & rc["created_at_dt"].notna()
+        & (rc["created_at_dt"] >= start_ts)
+        & (rc["created_at_dt"] <= end_ts)
+    )
+    new = rc.loc[mask]
+    if new.empty:
+        return 0.0
+    freq      = new["charge_interval_frequency"].replace(0, 1).fillna(1)
+    arr_local = new["recurring_price"].fillna(0) * new["quantity"].fillna(0) * (12.0 / freq)
+    fx        = get_fx()
+    currency  = new["currency"].fillna("USD")
+    return float((arr_local * currency.map(lambda c: fx.get(c, 1.0))).sum())
+
+
+def _spend_markets(start_ts: pd.Timestamp, end_ts: pd.Timestamp,
+                   markets: list[str]) -> float:
+    """
+    Marketing spend in USD across one or more markets for [start, end].
+    Mirrors _marketing_spend_in but sums multiple per-market columns instead
+    of using the global country filter.
+    """
+    col_by_market = {"UAE": "uae_usd", "KSA": "ksa_usd", "USA": "usa_usd"}
+    cols = [col_by_market[m] for m in markets if m in col_by_market]
+    if not cols:
+        return 0.0
+
+    daily = load_marketing_spend_daily()
+    daily_total = 0.0
+    days_covered_by_daily: set = set()
+    if daily is not None and not daily.empty:
+        d = daily[(daily["date"] >= start_ts.normalize())
+                  & (daily["date"] <= end_ts.normalize())]
+        if not d.empty:
+            daily_total = float(d[cols].sum().sum())
+            days_covered_by_daily = {ts.normalize() for ts in d["date"]}
+
+    mkt = load_marketing_spend()
+    if mkt is None or mkt.empty:
+        return daily_total
+
+    month_to_spend = {}
+    for ms, *vals in zip(mkt["month_dt"], *[mkt[c] for c in cols]):
+        month_to_spend[ms] = sum(float(v) if pd.notna(v) else 0.0 for v in vals)
+
+    today_norm           = pd.Timestamp.today().normalize()
+    current_month_start  = today_norm.to_period("M").to_timestamp()
+    days_elapsed_current = today_norm.day
+
+    fallback = 0.0
+    for day in pd.date_range(start_ts.normalize(), end_ts.normalize(), freq="D"):
+        if day in days_covered_by_daily:
+            continue
+        month_start  = day.to_period("M").to_timestamp()
+        spend_for_mo = month_to_spend.get(month_start, 0.0)
+        divisor = (max(days_elapsed_current, 1) if month_start == current_month_start
+                   else (month_start + pd.offsets.MonthEnd(0)).day)
+        fallback += spend_for_mo / divisor
+    return daily_total + fallback
+
+
+def _active_users_at_markets(ts: pd.Timestamp, markets: list[str]) -> int:
+    a_sub = _filter_markets(get_active_subscriptions(as_of=ts), markets)
+    a_own = _filter_markets(get_active_ownership(as_of=ts),     markets)
+    return (
+        int(a_sub["qty"].sum() if not a_sub.empty else 0)
+        + int(a_own["qty"].sum() if not a_own.empty else 0)
+    )
+
+
+def _arr_at_markets(ts: pd.Timestamp, markets: list[str]) -> float:
+    rc = load_recharge_full()
+    if rc.empty:
+        return 0.0
+    rc = rc[rc["market"].isin(markets)]
+    if rc.empty:
+        return 0.0
+    mask = (
+        rc["category"].isin(["Machine", "Filter"])
+        & rc["created_at_dt"].notna()
+        & (rc["created_at_dt"] <= ts)
+        & (rc["cancelled_at_dt"].isna() | (rc["cancelled_at_dt"] > ts))
+    )
+    a = rc.loc[mask]
+    if a.empty:
+        return 0.0
+    freq      = a["charge_interval_frequency"].replace(0, 1).fillna(1)
+    arr_local = a["recurring_price"].fillna(0) * a["quantity"].fillna(0) * (12.0 / freq)
+    fx        = get_fx()
+    currency  = a["currency"].fillna("USD")
+    return float((arr_local * currency.map(lambda c: fx.get(c, 1.0))).sum())
+
+
+def _user_base_breakdown(ts: pd.Timestamp) -> pd.DataFrame:
+    """Country × product matrix of total user base at `ts`."""
+    sub = get_active_subscriptions(as_of=ts)
+    own = get_active_ownership(as_of=ts)
+    pieces = [p for p in (sub, own) if p is not None and not p.empty]
+    if not pieces:
+        return pd.DataFrame()
+    combined = pd.concat(pieces, ignore_index=True)
+    pivot = combined.groupby(["market", "product"], as_index=False)["qty"].sum()
+    table = pivot.pivot(index="market", columns="product", values="qty").fillna(0).astype(int)
+    # Order columns by canonical product order
+    cols_in_order = [p for p in PRODUCT_ORDER if p in table.columns]
+    table = table[cols_in_order]
+    table.loc["Total"] = table.sum()
+    table["Total"] = table.sum(axis=1)
+    return table.reset_index().rename(columns={"market": "Market"})
+
+
+def _arr_breakdown(ts: pd.Timestamp) -> pd.DataFrame:
+    """Country × product matrix of ARR (USD) at `ts`."""
+    rc = load_recharge_full()
+    if rc.empty:
+        return pd.DataFrame()
+    mask = (
+        rc["category"].isin(["Machine", "Filter"])
+        & rc["created_at_dt"].notna()
+        & (rc["created_at_dt"] <= ts)
+        & (rc["cancelled_at_dt"].isna() | (rc["cancelled_at_dt"] > ts))
+    )
+    a = rc.loc[mask].copy()
+    if a.empty:
+        return pd.DataFrame()
+    freq = a["charge_interval_frequency"].replace(0, 1).fillna(1)
+    a["arr_usd"] = (a["recurring_price"].fillna(0) * a["quantity"].fillna(0) * (12.0 / freq))
+    fx       = get_fx()
+    a["arr_usd"] = a["arr_usd"] * a["currency"].fillna("USD").map(lambda c: fx.get(c, 1.0))
+    pivot = a.groupby(["market", "product"], as_index=False)["arr_usd"].sum()
+    table = pivot.pivot(index="market", columns="product", values="arr_usd").fillna(0)
+    cols_in_order = [p for p in PRODUCT_ORDER if p in table.columns]
+    table = table[cols_in_order]
+    table.loc["Total"] = table.sum()
+    table["Total"] = table.sum(axis=1)
+    # Format as USD
+    fmt = table.copy().reset_index().rename(columns={"market": "Market"})
+    for c in fmt.columns:
+        if c != "Market":
+            fmt[c] = fmt[c].map(fmt_usd)
+    return fmt
+
+
 def _churned_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> int:
     rc = load_recharge_full()
     if rc.empty:
@@ -232,331 +436,217 @@ prev_full_end   = mtd_start - pd.Timedelta(days=1)
 prev_start = prev_mtd_start
 prev_end   = prev_mtd_end
 
-# Today / yesterday for the "Today's Sales" scorecard
-yesterday_ts = today_ts - pd.Timedelta(days=1)
+# Today / yesterday / trailing-7d windows
+yesterday_ts  = today_ts - pd.Timedelta(days=1)
+t7_start      = today_ts - pd.Timedelta(days=6)
+t7_end        = today_ts
 
-# Trailing 7-day windows (inclusive of today for the current window)
-t7_start          = today_ts - pd.Timedelta(days=6)
-t7_end            = today_ts
-t7_prev_start     = today_ts - pd.Timedelta(days=13)
-t7_prev_end       = today_ts - pd.Timedelta(days=7)
-
-# Current-period figures
-cur_user_base   = _active_users_at(today_ts)
-prev_user_base  = _active_users_at(prev_end)
-
-cur_arr   = _arr_usd_at(today_ts)
-prev_arr  = _arr_usd_at(prev_end)
-
-cur_new     = _new_sales_in(mtd_start, today_ts)
-cur_churn   = _churned_in(mtd_start, today_ts)
-prev_new    = _new_sales_in(prev_start, prev_end)
-prev_churn  = _churned_in(prev_start, prev_end)
-
-# Today / yesterday / same-day-last-week sales (for the headline scorecards)
-today_sales            = _new_sales_in(today_ts, today_ts)
-yesterday_sales        = _new_sales_in(yesterday_ts, yesterday_ts)
-same_day_last_week_ts  = today_ts - pd.Timedelta(days=7)
-same_day_last_week_sales = _new_sales_in(same_day_last_week_ts, same_day_last_week_ts)
-
-# Trailing 7d figures
-t7_sales           = _new_sales_in(t7_start, t7_end)
-t7_prev_sales      = _new_sales_in(t7_prev_start, t7_prev_end)
-t7_churn           = _churned_in(t7_start, t7_end)
-t7_prev_churn      = _churned_in(t7_prev_start, t7_prev_end)
-t7_net             = t7_sales - t7_churn
-t7_prev_net        = t7_prev_sales - t7_prev_churn
-t7_spend           = _marketing_spend_in(t7_start, t7_end)
-t7_prev_spend      = _marketing_spend_in(t7_prev_start, t7_prev_end)
-# CAC denominators exclude offline (B2B / direct) deals
-t7_paid_sales      = _paid_sales_in(t7_start, t7_end)
-t7_prev_paid_sales = _paid_sales_in(t7_prev_start, t7_prev_end)
-t7_cac             = (t7_spend / t7_paid_sales)           if t7_paid_sales      > 0 else 0.0
-t7_prev_cac        = (t7_prev_spend / t7_prev_paid_sales) if t7_prev_paid_sales > 0 else 0.0
-
-# Monthly churn rate — denominator is ACTIVE MACHINE SUBS only,
-# matching the convention on the Retention page.
-#
-# CURRENT month: project MTD churn to a full-month rate based on pace so far.
-#   projected_full_month_churn = mtd_churn × (days_in_month / days_into_month)
-#   projected_rate             = projected_full_month_churn / active_at_month_start
-#
-# PRIOR month: actual full-month churn rate (April 1-30 churn / April 1 base).
-active_subs_mtd_start        = _active_machine_subs_at(mtd_start)
-active_subs_prev_full_start  = _active_machine_subs_at(prev_full_start)
-
-prev_full_churn = _churned_in(prev_full_start, prev_full_end)
-
-if active_subs_mtd_start > 0 and days_into_month > 0:
-    projected_full_churn = cur_churn * (days_in_cur_month / days_into_month)
-    cur_churn_rate       = projected_full_churn / active_subs_mtd_start
-else:
-    cur_churn_rate = 0.0
-
-prev_churn_rate = (prev_full_churn / active_subs_prev_full_start) \
-                  if active_subs_prev_full_start > 0 else 0.0
-
-# CAC MTD — denominator excludes offline (B2B / direct) deals so a big
-# offline sale doesn't artificially deflate the cost-per-acquisition.
-cur_spend       = _marketing_spend_in(mtd_start, today_ts)
-prev_spend      = _marketing_spend_in(prev_start, prev_end)
-cur_paid_new    = _paid_sales_in(mtd_start, today_ts)
-prev_paid_new   = _paid_sales_in(prev_start, prev_end)
-cur_cac  = (cur_spend / cur_paid_new)   if cur_paid_new  > 0 else 0.0
-prev_cac = (prev_spend / prev_paid_new) if prev_paid_new > 0 else 0.0
-
-# ── Row 1: Headline KPIs ──────────────────────────────────────────────────────
+# ── KPI Row A: User Base + ARR (with breakdown popovers) ────────────────────
 st.markdown("---")
-k1, k2, k3, k4, k5, k6 = st.columns(6)
+rA1, rA2 = st.columns(2)
 
-k1.metric(
-    "TODAY'S SALES",
-    f"{today_sales:,}",
-    delta=_fmt_delta(_delta_pct(today_sales, yesterday_sales)),
-    help="New machine sales today (vs. yesterday). Today is partial — "
-         "expect this to grow throughout the day.",
-)
-k2.metric(
-    f"SAME DAY · LAST WEEK ({same_day_last_week_ts:%a %d %b})",
-    f"{same_day_last_week_sales:,}",
-    delta=_fmt_delta(_delta_pct(today_sales, same_day_last_week_sales)),
-    help=(
-        f"New machine sales on **{same_day_last_week_ts:%A %d %b %Y}** "
-        f"(7 days ago, same weekday). Delta shows today's sales "
-        f"vs. that day — useful since day-of-week affects volume."
-    ),
-)
-k3.metric(
-    "ARR (USD)",
-    fmt_usd(cur_arr),
-    delta=_fmt_delta(_delta_pct(cur_arr, prev_arr)),
-    help=f"Annualised run-rate from active Machine + Filter subs as of today "
-         f"vs. same MTD-day in prior month ({prev_end:%d %b %Y}).",
-)
-k4.metric(
-    "TOTAL USER BASE",
-    f"{cur_user_base:,}",
-    delta=_fmt_delta(_delta_pct(cur_user_base, prev_user_base)),
-    help=f"Active machine subs + active ownership today vs. same MTD-day "
-         f"in prior month ({prev_end:%d %b %Y}).",
-)
-k5.metric(
-    "PROJECTED MONTHLY CHURN",
-    f"{cur_churn_rate:.2%}",
-    delta=_fmt_delta(_delta_pct(cur_churn_rate, prev_churn_rate)),
-    delta_color="inverse",
-    help=(
-        f"Pro-rata projection: MTD churns ({cur_churn:,} between "
-        f"{mtd_start:%d %b} and {today_ts:%d %b}) scaled to full-month pace "
-        f"({days_in_cur_month}/{days_into_month}× = "
-        f"~{cur_churn * days_in_cur_month / max(days_into_month,1):.0f} projected), "
-        f"then divided by active machine subs at month start. "
-        f"Comparison: actual full-month churn rate for "
-        f"{prev_full_start:%b %Y} ({prev_full_churn:,} cancels)."
-    ),
-)
-k6.metric(
-    "CAC · MTD",
-    fmt_usd(cur_cac) if cur_cac > 0 else "—",
-    delta=_fmt_delta(_delta_pct(cur_cac, prev_cac)),
-    delta_color="inverse",
-    help=(
-        f"Blended CAC = marketing spend ÷ paid-attributable new machine sales "
-        f"for {mtd_start:%d %b}–{today_ts:%d %b} "
-        f"(MTD denominator: {cur_paid_new:,} paid sales). "
-        f"Offline subs/ownership (B2B / direct) are excluded since they "
-        f"aren't acquired through paid ads. Compared to same "
-        f"{days_into_month}-day window of prior month "
-        f"({prev_start:%d %b}–{prev_end:%d %b}). Per-market spend pulled "
-        f"from Paid Ads Spend tabs (UAE / KSA / USA columns)."
-    ),
-)
+cur_user_base  = _active_users_at_markets(today_ts, ALL_MARKETS)
+prev_user_base = _active_users_at_markets(prev_end, ALL_MARKETS)
+cur_arr        = _arr_at_markets(today_ts, ALL_MARKETS)
+prev_arr       = _arr_at_markets(prev_end, ALL_MARKETS)
 
-# ── MTD sales vs. projections ─────────────────────────────────────────────────
-_proj = load_projections()
-_proj_key = mtd_start.strftime("%Y-%m-%d")
-_proj_month = _proj.get(_proj_key)
-
-if _proj_month is None:
-    st.caption(
-        f"ℹ️ No projection found for **{mtd_start:%b %Y}** in the Projections tab. "
-        f"Current MTD sales: **{cur_new:,}**."
+with rA1:
+    metric_col, pop_col = st.columns([4, 1])
+    metric_col.metric(
+        "TOTAL USER BASE",
+        f"{cur_user_base:,}",
+        delta=_fmt_delta(_delta_pct(cur_user_base, prev_user_base)),
+        help=f"Active machine subscribers + active ownership today, vs. same MTD-day "
+             f"of prior month ({prev_end:%d %b %Y}). Click Breakdown for market × product split.",
     )
-else:
-    # Target value depends on country filter
-    if country_sel == "All":
-        _target       = _proj_month["global"]
-        _proj_market_split = _proj_month["by_market"]   # absolute counts
-    else:
-        _target       = _proj_month["by_market"].get(country_sel, 0)
-        _proj_market_split = {country_sel: _target}
+    with pop_col:
+        st.write("")  # vertical alignment nudge
+        with st.popover("Breakdown ▾", use_container_width=True):
+            st.markdown("**User base · market × product**")
+            ub = _user_base_breakdown(today_ts)
+            if not ub.empty:
+                st.dataframe(ub, hide_index=True, use_container_width=True)
+            else:
+                st.caption("No data.")
 
-    # Pace-aware projection: where does the current month land if the daily pace continues?
-    _days_so_far    = days_into_month
-    _days_in_month  = days_in_cur_month
-    _projected_eom  = (cur_new / _days_so_far * _days_in_month) if _days_so_far > 0 else 0
-    _pct_of_target  = (cur_new / _target * 100) if _target > 0 else 0
-    _proj_pct       = (_projected_eom / _target * 100) if _target > 0 else 0
+with rA2:
+    metric_col, pop_col = st.columns([4, 1])
+    metric_col.metric(
+        "TOTAL ARR (USD)",
+        fmt_usd(cur_arr),
+        delta=_fmt_delta(_delta_pct(cur_arr, prev_arr)),
+        help=f"Annualised run-rate from active Machine + Filter subs as of today "
+             f"vs. same MTD-day in prior month ({prev_end:%d %b %Y}). Click Breakdown for market × product split.",
+    )
+    with pop_col:
+        st.write("")
+        with st.popover("Breakdown ▾", use_container_width=True):
+            st.markdown("**ARR · market × product (USD)**")
+            ab = _arr_breakdown(today_ts)
+            if not ab.empty:
+                st.dataframe(ab, hide_index=True, use_container_width=True)
+            else:
+                st.caption("No data.")
 
-    # Linear pacing: at day N, you should be N/days_in_month of target.
-    _expected_so_far = _target * (_days_so_far / _days_in_month)
-    _pace_delta      = cur_new - _expected_so_far
-
-    # On-track / behind status
-    if _projected_eom >= _target * 0.98:
-        _status_label = "✅ ON TRACK"
-        _status_color = "#10b981"
-    elif _projected_eom >= _target * 0.85:
-        _status_label = "⚠️ SLIGHTLY BEHIND"
-        _status_color = "#f59e0b"
-    else:
-        _status_label = "🔴 BEHIND TARGET"
-        _status_color = "#ef4444"
-
-    # Layout: progress bar on left (~65%), market split on right (~35%)
-    pcol_left, pcol_right = st.columns([2.0, 1.0])
-
-    with pcol_left:
-        # Progress bar — capped at 100% for the fill, but actual % is shown
-        _fill_pct = min(_pct_of_target, 100)
-        _bar_color = "#10b981" if _pct_of_target >= 100 else (
-                     "#22c55e" if _pace_delta >= 0 else
-                     "#f59e0b" if _projected_eom >= _target * 0.85 else "#ef4444")
-
-        st.markdown(
-            f"""
-            <div style="padding:14px 16px; background:rgba(30,41,59,0.5); border-radius:12px;
-                        border:1px solid rgba(71,85,105,0.4);">
-              <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;">
-                <div style="font-size:12px; color:#94a3b8; letter-spacing:0.05em;">
-                  {country_sel.upper()} TARGET · {mtd_start.strftime('%b %Y').upper()}
-                </div>
-                <div style="font-size:11px; color:{_status_color}; font-weight:600;">
-                  {_status_label}
-                </div>
-              </div>
-              <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;">
-                <div style="font-size:24px; font-weight:600; color:#e2e8f0;">
-                  {cur_new:,} <span style="font-size:14px; color:#64748b;">/ {_target:,}</span>
-                </div>
-                <div style="font-size:14px; color:#cbd5e1;">
-                  <strong>{_pct_of_target:.0f}%</strong> of target
-                </div>
-              </div>
-              <div style="position:relative; height:14px; background:rgba(15,23,42,0.6);
-                          border-radius:7px; overflow:hidden;">
-                <div style="position:absolute; left:0; top:0; height:100%;
-                            width:{_fill_pct:.1f}%; background:{_bar_color};
-                            border-radius:7px;"></div>
-                <!-- Pace indicator: where you should be by today, linearly -->
-                <div style="position:absolute; left:{(_days_so_far/_days_in_month)*100:.1f}%;
-                            top:-2px; height:18px; width:2px; background:#e2e8f0;
-                            opacity:0.5;" title="Linear pace marker"></div>
-              </div>
-              <div style="display:flex; justify-content:space-between; margin-top:8px;
-                          font-size:11px; color:#94a3b8;">
-                <span>Pace: <strong style="color:{'#22c55e' if _pace_delta >= 0 else '#ef4444'}">
-                  {'+' if _pace_delta >= 0 else ''}{_pace_delta:.0f}
-                </strong> vs linear ({_expected_so_far:,.0f} expected by today)</span>
-                <span>Projected EOM: <strong style="color:#cbd5e1">{_projected_eom:,.0f}</strong>
-                  ({'+' if _projected_eom >= _target else ''}{(_projected_eom - _target):,.0f} vs target)</span>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with pcol_right:
-        # Product-split delta: actual MTD vs projected breakdown.
-        # When "All" is selected, sum projected products across UAE+KSA+USA.
-        # When a market is selected, use that market's product projection.
-        if country_sel == "All":
-            proj_products = {}
-            for mkt in ("UAE", "KSA", "USA"):
-                for p, q in _proj_month.get(f"by_{mkt.lower()}_product", {}).items():
-                    proj_products[p] = proj_products.get(p, 0) + q
-            sales_df = get_all_machine_sales(start_dt=mtd_start, end_dt=today_ts)
-            _split_title = "PRODUCT MIX"
-        else:
-            proj_products = _proj_month.get(f"by_{country_sel.lower()}_product", {})
-            sales_df = get_all_machine_sales(start_dt=mtd_start, end_dt=today_ts)
-            sales_df = sales_df[sales_df["market"] == country_sel] if not sales_df.empty else sales_df
-            _split_title = f"{country_sel} PRODUCT MIX"
-
-        proj_total = sum(proj_products.values()) or 1
-        split_rows = []
-        for prod, proj_qty in proj_products.items():
-            actual_qty = int(sales_df[sales_df["product"] == prod]["qty"].sum()) if not sales_df.empty else 0
-            # Skip products with no projection AND no actual sales
-            if proj_qty == 0 and actual_qty == 0:
-                continue
-            expected   = proj_qty * (_days_so_far / _days_in_month)
-            delta      = actual_qty - expected
-            actual_pct = (actual_qty / cur_new * 100) if cur_new > 0 else 0
-            proj_pct   = (proj_qty / proj_total * 100)
-            split_rows.append({
-                "Product":    prod,
-                "MTD":        f"{actual_qty:,}",
-                "Pace Δ":     f"{'+' if delta >= 0 else ''}{delta:.0f}",
-                "Mix %":      f"{actual_pct:.0f}%",
-                "Proj Mix %": f"{proj_pct:.0f}%",
-            })
-        split_df = pd.DataFrame(split_rows)
-
-        st.markdown(
-            f"<div style='font-size:11px; color:#94a3b8; letter-spacing:0.05em; "
-            f"margin:0 0 6px 4px;'>{_split_title}</div>",
-            unsafe_allow_html=True,
-        )
-        if not split_df.empty:
-            st.dataframe(split_df, hide_index=True, use_container_width=True, height=210)
-
-# ── Trailing 7-Day Analysis ───────────────────────────────────────────────────
+# ── KPI Rows B / C / D: Today's Sales | ARR Added Today | CAC MTD (Total / GCC / USA)
 st.markdown("---")
-st.markdown("### Trailing 7-Day Analysis")
 
-# Daily averages — first three cards report per-day means (totals ÷ 7).
-t7_sales_avg       = t7_sales       / 7
-t7_prev_sales_avg  = t7_prev_sales  / 7
-t7_churn_avg       = t7_churn       / 7
-t7_prev_churn_avg  = t7_prev_churn  / 7
-t7_net_avg         = t7_net         / 7
-t7_prev_net_avg    = t7_prev_net    / 7
+# Sales today
+sales_today_all = _new_sales_markets(today_ts, today_ts, ALL_MARKETS)
+sales_today_gcc = _new_sales_markets(today_ts, today_ts, GCC_MARKETS)
+sales_today_usa = _new_sales_markets(today_ts, today_ts, USA_MARKETS)
+sales_yest_all  = _new_sales_markets(yesterday_ts, yesterday_ts, ALL_MARKETS)
+sales_yest_gcc  = _new_sales_markets(yesterday_ts, yesterday_ts, GCC_MARKETS)
+sales_yest_usa  = _new_sales_markets(yesterday_ts, yesterday_ts, USA_MARKETS)
 
-t1, t2, t3, t4 = st.columns(4)
-
-t1.metric(
-    "AVG DAILY SALES (T7D)",
-    f"{t7_sales_avg:.1f}",
-    delta=_fmt_delta(_delta_pct(t7_sales_avg, t7_prev_sales_avg)),
-    help=f"Average new machine sales per day, {t7_start.strftime('%b %d')} – "
-         f"{t7_end.strftime('%b %d')} (total ÷ 7) vs. previous 7-day window.",
+rB1, rB2, rB3 = st.columns(3)
+rB1.metric(
+    "TOTAL SALES TODAY", f"{sales_today_all:,}",
+    delta=_fmt_delta(_delta_pct(sales_today_all, sales_yest_all)),
+    help="New machine sales today, gross of offline. Compared to yesterday.",
 )
-t2.metric(
-    "AVG DAILY CANCELLATIONS (T7D)",
-    f"{t7_churn_avg:.1f}",
-    delta=_fmt_delta(_delta_pct(t7_churn_avg, t7_prev_churn_avg)),
+rB2.metric(
+    "GCC SALES TODAY (UAE + KSA)", f"{sales_today_gcc:,}",
+    delta=_fmt_delta(_delta_pct(sales_today_gcc, sales_yest_gcc)),
+)
+rB3.metric(
+    "USA SALES TODAY", f"{sales_today_usa:,}",
+    delta=_fmt_delta(_delta_pct(sales_today_usa, sales_yest_usa)),
+)
+
+# ARR added today (gross — no churn subtraction)
+arr_today_all = _arr_added_markets(today_ts, today_ts, ALL_MARKETS)
+arr_today_gcc = _arr_added_markets(today_ts, today_ts, GCC_MARKETS)
+arr_today_usa = _arr_added_markets(today_ts, today_ts, USA_MARKETS)
+arr_yest_all  = _arr_added_markets(yesterday_ts, yesterday_ts, ALL_MARKETS)
+arr_yest_gcc  = _arr_added_markets(yesterday_ts, yesterday_ts, GCC_MARKETS)
+arr_yest_usa  = _arr_added_markets(yesterday_ts, yesterday_ts, USA_MARKETS)
+
+rC1, rC2, rC3 = st.columns(3)
+rC1.metric(
+    "TOTAL ARR ADDED TODAY", fmt_usd(arr_today_all),
+    delta=_fmt_delta(_delta_pct(arr_today_all, arr_yest_all)),
+    help="Annualised value of Machine + Filter subs CREATED today "
+         "(recurring_price × qty × 12 ÷ charge_interval). Gross only — "
+         "today's cancellations aren't subtracted.",
+)
+rC2.metric(
+    "GCC ARR ADDED TODAY", fmt_usd(arr_today_gcc),
+    delta=_fmt_delta(_delta_pct(arr_today_gcc, arr_yest_gcc)),
+)
+rC3.metric(
+    "USA ARR ADDED TODAY", fmt_usd(arr_today_usa),
+    delta=_fmt_delta(_delta_pct(arr_today_usa, arr_yest_usa)),
+)
+
+# CAC MTD — denominator excludes offline (B2B / direct) deals
+spend_mtd_all  = _spend_markets(mtd_start, today_ts, ALL_MARKETS)
+spend_mtd_gcc  = _spend_markets(mtd_start, today_ts, GCC_MARKETS)
+spend_mtd_usa  = _spend_markets(mtd_start, today_ts, USA_MARKETS)
+paid_mtd_all   = _paid_sales_markets(mtd_start, today_ts, ALL_MARKETS)
+paid_mtd_gcc   = _paid_sales_markets(mtd_start, today_ts, GCC_MARKETS)
+paid_mtd_usa   = _paid_sales_markets(mtd_start, today_ts, USA_MARKETS)
+cac_mtd_all = (spend_mtd_all / paid_mtd_all) if paid_mtd_all > 0 else 0.0
+cac_mtd_gcc = (spend_mtd_gcc / paid_mtd_gcc) if paid_mtd_gcc > 0 else 0.0
+cac_mtd_usa = (spend_mtd_usa / paid_mtd_usa) if paid_mtd_usa > 0 else 0.0
+
+spend_prev_all = _spend_markets(prev_start, prev_end, ALL_MARKETS)
+spend_prev_gcc = _spend_markets(prev_start, prev_end, GCC_MARKETS)
+spend_prev_usa = _spend_markets(prev_start, prev_end, USA_MARKETS)
+paid_prev_all  = _paid_sales_markets(prev_start, prev_end, ALL_MARKETS)
+paid_prev_gcc  = _paid_sales_markets(prev_start, prev_end, GCC_MARKETS)
+paid_prev_usa  = _paid_sales_markets(prev_start, prev_end, USA_MARKETS)
+cac_prev_all = (spend_prev_all / paid_prev_all) if paid_prev_all > 0 else 0.0
+cac_prev_gcc = (spend_prev_gcc / paid_prev_gcc) if paid_prev_gcc > 0 else 0.0
+cac_prev_usa = (spend_prev_usa / paid_prev_usa) if paid_prev_usa > 0 else 0.0
+
+rD1, rD2, rD3 = st.columns(3)
+rD1.metric(
+    "TOTAL CAC · MTD", fmt_usd(cac_mtd_all) if cac_mtd_all > 0 else "—",
+    delta=_fmt_delta(_delta_pct(cac_mtd_all, cac_prev_all)),
     delta_color="inverse",
-    help=f"Average true machine cancels per day, {t7_start.strftime('%b %d')} – "
-         f"{t7_end.strftime('%b %d')} (total ÷ 7) vs. previous 7-day window.",
+    help=f"Paid-ad spend ÷ paid-attributable new sales for "
+         f"{mtd_start:%d %b}–{today_ts:%d %b}. Offline (B2B / direct) deals "
+         f"excluded from the denominator. Compared to same {days_into_month}-day "
+         f"window of prior month.",
 )
-t3.metric(
-    "AVG DAILY NET USERS (T7D)",
-    f"{'+' if t7_net_avg >= 0 else ''}{t7_net_avg:.1f}",
-    delta=_fmt_delta(_delta_pct(t7_net_avg, t7_prev_net_avg)),
-    help="Average net users added per day = (T7d sales − T7d cancellations) ÷ 7, "
-         "vs. previous 7-day window.",
-)
-t4.metric(
-    "TRAILING 7D CAC",
-    fmt_usd(t7_cac) if t7_cac > 0 else "—",
-    delta=_fmt_delta(_delta_pct(t7_cac, t7_prev_cac)),
+rD2.metric(
+    "GCC CAC · MTD", fmt_usd(cac_mtd_gcc) if cac_mtd_gcc > 0 else "—",
+    delta=_fmt_delta(_delta_pct(cac_mtd_gcc, cac_prev_gcc)),
     delta_color="inverse",
-    help="Marketing spend (day-prorated) ÷ paid-attributable new machine "
-         "sales over the trailing 7 days. Offline (B2B / direct) sales "
-         "are excluded from the denominator since they aren't acquired "
-         "through paid ads.",
 )
+rD3.metric(
+    "USA CAC · MTD", fmt_usd(cac_mtd_usa) if cac_mtd_usa > 0 else "—",
+    delta=_fmt_delta(_delta_pct(cac_mtd_usa, cac_prev_usa)),
+    delta_color="inverse",
+)
+
+# ── Row E: Last-7-day chart + KPI table (GCC × USA) ──────────────────────────
+st.markdown("---")
+st.markdown("### Trailing 7-Day Snapshot")
+
+eL, eR = st.columns([2, 1])
+
+with eL:
+    days = list(pd.date_range(t7_start, t7_end, freq="D"))
+    x_labels   = [d.strftime("%a %d %b") for d in days]
+    gcc_series = [_new_sales_markets(d, d, GCC_MARKETS) for d in days]
+    usa_series = [_new_sales_markets(d, d, USA_MARKETS) for d in days]
+
+    fig_t7 = go.Figure()
+    fig_t7.add_trace(go.Bar(
+        x=x_labels, y=gcc_series, name="GCC (UAE + KSA)",
+        marker_color="#6366f1", opacity=0.9,
+        text=[f"{v:,}" for v in gcc_series], textposition="outside",
+        textfont=dict(color="#cbd5e1", size=10), cliponaxis=False,
+        hovertemplate="%{x}<br>GCC: %{y:,}<extra></extra>",
+    ))
+    fig_t7.add_trace(go.Bar(
+        x=x_labels, y=usa_series, name="USA",
+        marker_color="#10b981", opacity=0.9,
+        text=[f"{v:,}" for v in usa_series], textposition="outside",
+        textfont=dict(color="#cbd5e1", size=10), cliponaxis=False,
+        hovertemplate="%{x}<br>USA: %{y:,}<extra></extra>",
+    ))
+    fig_t7.update_layout(
+        barmode="group",
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#e2e8f0", size=11),
+        height=340,
+        margin=dict(l=10, r=10, t=20, b=30),
+        xaxis=dict(showgrid=False),
+        yaxis=dict(gridcolor="rgba(148,163,184,0.15)", zeroline=False),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(fig_t7, use_container_width=True)
+
+with eR:
+    def _t7_avg_sales(m): return _new_sales_markets(t7_start, t7_end, m) / 7
+    def _t7_avg_churn(m): return _churned_markets(t7_start, t7_end, m) / 7
+    def _t7_avg_net(m):   return (_new_sales_markets(t7_start, t7_end, m) - _churned_markets(t7_start, t7_end, m)) / 7
+    def _t7_cac(m):
+        spend = _spend_markets(t7_start, t7_end, m)
+        paid  = _paid_sales_markets(t7_start, t7_end, m)
+        return spend / paid if paid > 0 else 0.0
+
+    cac_gcc = _t7_cac(GCC_MARKETS)
+    cac_usa = _t7_cac(USA_MARKETS)
+    kpi_rows = [
+        ("Avg Daily Sales",        f"{_t7_avg_sales(GCC_MARKETS):.1f}", f"{_t7_avg_sales(USA_MARKETS):.1f}"),
+        ("Avg Daily Cancellations",f"{_t7_avg_churn(GCC_MARKETS):.1f}", f"{_t7_avg_churn(USA_MARKETS):.1f}"),
+        ("Avg Daily Net Users",    f"{_t7_avg_net(GCC_MARKETS):+.1f}",  f"{_t7_avg_net(USA_MARKETS):+.1f}"),
+        ("Trailing 7-Day CAC",     fmt_usd(cac_gcc) if cac_gcc > 0 else "—",
+                                   fmt_usd(cac_usa) if cac_usa > 0 else "—"),
+    ]
+    kpi_df = pd.DataFrame(kpi_rows, columns=["Metric", "GCC", "USA"])
+    st.markdown(
+        "<div style='font-size:11px; color:#94a3b8; letter-spacing:0.05em; "
+        "margin:6px 0 6px 4px;'>LAST 7 DAYS · {start} – {end}</div>".format(
+            start=t7_start.strftime("%d %b"), end=t7_end.strftime("%d %b"),
+        ),
+        unsafe_allow_html=True,
+    )
+    st.dataframe(kpi_df, hide_index=True, use_container_width=True, height=210)
 
 # ── Growth: ARR + Monthly Sales over time ─────────────────────────────────────
 st.markdown("---")
