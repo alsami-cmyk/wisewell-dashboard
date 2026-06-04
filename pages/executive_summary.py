@@ -296,6 +296,46 @@ def _user_base_breakdown(ts: pd.Timestamp) -> pd.DataFrame:
     return table.reset_index().rename(columns={"market": "Market"})
 
 
+def _user_base_filtered(ts: pd.Timestamp, markets: list[str], product: str | None) -> int:
+    """User base at `ts`, scoped to markets & optionally a single product."""
+    sub = get_active_subscriptions(as_of=ts)
+    own = get_active_ownership(as_of=ts)
+    pieces = [p for p in (sub, own) if p is not None and not p.empty]
+    if not pieces:
+        return 0
+    combined = pd.concat(pieces, ignore_index=True)
+    combined = combined[combined["market"].isin(markets)]
+    if product:
+        combined = combined[combined["product"] == product]
+    return int(combined["qty"].sum()) if not combined.empty else 0
+
+
+def _arr_filtered(ts: pd.Timestamp, markets: list[str], product: str | None) -> float:
+    """ARR (USD) at `ts`, scoped to markets & optionally a single product."""
+    rc = load_recharge_full()
+    if rc.empty:
+        return 0.0
+    rc = rc[rc["market"].isin(markets)]
+    if product:
+        rc = rc[rc["product"] == product]
+    if rc.empty:
+        return 0.0
+    mask = (
+        rc["category"].isin(["Machine", "Filter"])
+        & rc["created_at_dt"].notna()
+        & (rc["created_at_dt"] <= ts)
+        & (rc["cancelled_at_dt"].isna() | (rc["cancelled_at_dt"] > ts))
+    )
+    a = rc.loc[mask]
+    if a.empty:
+        return 0.0
+    freq      = a["charge_interval_frequency"].replace(0, 1).fillna(1)
+    arr_local = a["recurring_price"].fillna(0) * a["quantity"].fillna(0) * (12.0 / freq)
+    fx        = get_fx()
+    currency  = a["currency"].fillna("USD")
+    return float((arr_local * currency.map(lambda c: fx.get(c, 1.0))).sum())
+
+
 def _arr_breakdown(ts: pd.Timestamp) -> pd.DataFrame:
     """Country × product matrix of ARR (USD) at `ts`."""
     rc = load_recharge_full()
@@ -441,52 +481,64 @@ yesterday_ts  = today_ts - pd.Timedelta(days=1)
 t7_start      = today_ts - pd.Timedelta(days=6)
 t7_end        = today_ts
 
-# ── KPI Row A: User Base + ARR (with breakdown popovers) ────────────────────
+# ── KPI Row A: User Base + ARR with inline Country/Product filters ─────────
 st.markdown("---")
+
+COUNTRY_OPTS = ["All", "UAE", "KSA", "USA"]
+PRODUCT_OPTS = ["All"] + PRODUCT_ORDER  # PRODUCT_ORDER = ["Model 1", "Nano+", "Bubble", "Flat", "Nano Tank"]
+
 rA1, rA2 = st.columns(2)
 
-cur_user_base  = _active_users_at_markets(today_ts, ALL_MARKETS)
-prev_user_base = _active_users_at_markets(prev_end, ALL_MARKETS)
-cur_arr        = _arr_at_markets(today_ts, ALL_MARKETS)
-prev_arr       = _arr_at_markets(prev_end, ALL_MARKETS)
-
 with rA1:
-    metric_col, pop_col = st.columns([4, 1])
-    metric_col.metric(
-        "TOTAL USER BASE",
-        f"{cur_user_base:,}",
-        delta=_fmt_delta(_delta_pct(cur_user_base, prev_user_base)),
-        help=f"Active machine subscribers + active ownership today, vs. same MTD-day "
-             f"of prior month ({prev_end:%d %b %Y}). Click Breakdown for market × product split.",
+    # Header row: title + 2 dropdowns
+    t_col, c_col, p_col = st.columns([2.0, 1.1, 1.1])
+    t_col.markdown(
+        "<div style='font-size:0.78rem; color:#64748b; text-transform:uppercase; "
+        "letter-spacing:.05em; padding-top:34px;'>TOTAL USER BASE</div>",
+        unsafe_allow_html=True,
     )
-    with pop_col:
-        st.write("")  # vertical alignment nudge
-        with st.popover("Breakdown ▾", use_container_width=True):
-            st.markdown("**User base · market × product**")
-            ub = _user_base_breakdown(today_ts)
-            if not ub.empty:
-                st.dataframe(ub, hide_index=True, use_container_width=True)
-            else:
-                st.caption("No data.")
+    ub_country = c_col.selectbox("Country", COUNTRY_OPTS, key="ub_country",
+                                 label_visibility="visible")
+    ub_product = p_col.selectbox("Product", PRODUCT_OPTS, key="ub_product",
+                                 label_visibility="visible")
+    ub_mkts = ALL_MARKETS if ub_country == "All" else [ub_country]
+    ub_prod = None if ub_product == "All" else ub_product
+    cur_user_base  = _user_base_filtered(today_ts,  ub_mkts, ub_prod)
+    prev_user_base = _user_base_filtered(prev_end,  ub_mkts, ub_prod)
+    st.metric(
+        label="Total User Base",
+        value=f"{cur_user_base:,}",
+        delta=_fmt_delta(_delta_pct(cur_user_base, prev_user_base)),
+        help=f"Active machine subscribers + active ownership · "
+             f"Country={ub_country} · Product={ub_product}. "
+             f"Delta vs same MTD-day of prior month ({prev_end:%d %b %Y}).",
+        label_visibility="collapsed",
+    )
 
 with rA2:
-    metric_col, pop_col = st.columns([4, 1])
-    metric_col.metric(
-        "TOTAL ARR (USD)",
-        fmt_usd(cur_arr),
-        delta=_fmt_delta(_delta_pct(cur_arr, prev_arr)),
-        help=f"Annualised run-rate from active Machine + Filter subs as of today "
-             f"vs. same MTD-day in prior month ({prev_end:%d %b %Y}). Click Breakdown for market × product split.",
+    t_col, c_col, p_col = st.columns([2.0, 1.1, 1.1])
+    t_col.markdown(
+        "<div style='font-size:0.78rem; color:#64748b; text-transform:uppercase; "
+        "letter-spacing:.05em; padding-top:34px;'>TOTAL ARR (USD)</div>",
+        unsafe_allow_html=True,
     )
-    with pop_col:
-        st.write("")
-        with st.popover("Breakdown ▾", use_container_width=True):
-            st.markdown("**ARR · market × product (USD)**")
-            ab = _arr_breakdown(today_ts)
-            if not ab.empty:
-                st.dataframe(ab, hide_index=True, use_container_width=True)
-            else:
-                st.caption("No data.")
+    arr_country = c_col.selectbox("Country", COUNTRY_OPTS, key="arr_country",
+                                  label_visibility="visible")
+    arr_product = p_col.selectbox("Product", PRODUCT_OPTS, key="arr_product",
+                                  label_visibility="visible")
+    arr_mkts = ALL_MARKETS if arr_country == "All" else [arr_country]
+    arr_prod = None if arr_product == "All" else arr_product
+    cur_arr  = _arr_filtered(today_ts, arr_mkts, arr_prod)
+    prev_arr = _arr_filtered(prev_end, arr_mkts, arr_prod)
+    st.metric(
+        label="Total ARR",
+        value=fmt_usd(cur_arr),
+        delta=_fmt_delta(_delta_pct(cur_arr, prev_arr)),
+        help=f"Annualised run-rate from active Machine + Filter subs · "
+             f"Country={arr_country} · Product={arr_product}. "
+             f"Delta vs same MTD-day of prior month ({prev_end:%d %b %Y}).",
+        label_visibility="collapsed",
+    )
 
 # ── KPI Rows B / C / D: Today's Sales | ARR Added Today | CAC MTD (Total / GCC / USA)
 st.markdown("---")
@@ -593,31 +645,49 @@ with eL:
     gcc_series = [_new_sales_markets(d, d, GCC_MARKETS) for d in days]
     usa_series = [_new_sales_markets(d, d, USA_MARKETS) for d in days]
 
+    totals_series = [g + u for g, u in zip(gcc_series, usa_series)]
+
     fig_t7 = go.Figure()
+    # GCC at the bottom — show its value inside the bar segment
     fig_t7.add_trace(go.Bar(
         x=x_labels, y=gcc_series, name="GCC (UAE + KSA)",
-        marker_color="#6366f1", opacity=0.9,
-        text=[f"{v:,}" for v in gcc_series], textposition="outside",
-        textfont=dict(color="#cbd5e1", size=10), cliponaxis=False,
+        marker_color="#6366f1",
+        text=[f"{v:,}" if v > 0 else "" for v in gcc_series],
+        textposition="inside",
+        textfont=dict(color="#e2e8f0", size=11),
+        insidetextanchor="middle",
+        cliponaxis=False,
         hovertemplate="%{x}<br>GCC: %{y:,}<extra></extra>",
     ))
+    # USA on top — always visible because it stacks above GCC
     fig_t7.add_trace(go.Bar(
         x=x_labels, y=usa_series, name="USA",
-        marker_color="#10b981", opacity=0.9,
-        text=[f"{v:,}" for v in usa_series], textposition="outside",
-        textfont=dict(color="#cbd5e1", size=10), cliponaxis=False,
+        marker_color="#10b981",
+        text=[f"{v:,}" if v > 0 else "" for v in usa_series],
+        textposition="inside",
+        textfont=dict(color="#e2e8f0", size=11),
+        insidetextanchor="middle",
+        cliponaxis=False,
         hovertemplate="%{x}<br>USA: %{y:,}<extra></extra>",
     ))
     fig_t7.update_layout(
-        barmode="group",
+        barmode="stack",  # ← USA stacks on top of GCC, never invisible
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#e2e8f0", size=11),
         height=340,
-        margin=dict(l=10, r=10, t=20, b=30),
+        margin=dict(l=10, r=10, t=30, b=30),
         xaxis=dict(showgrid=False),
         yaxis=dict(gridcolor="rgba(148,163,184,0.15)", zeroline=False),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
+    # Total label on top of each stack
+    for x, t in zip(x_labels, totals_series):
+        if t > 0:
+            fig_t7.add_annotation(
+                x=x, y=t, text=f"<b>{t:,}</b>",
+                showarrow=False, yshift=14,
+                font=dict(color="#cbd5e1", size=11),
+            )
     st.plotly_chart(fig_t7, use_container_width=True)
 
 with eR:
