@@ -660,33 +660,26 @@ with eL:
     gcc_series = [_new_sales_markets(d, d, GCC_MARKETS) for d in days]
     usa_series = [_new_sales_markets(d, d, USA_MARKETS) for d in days]
 
-    totals_series = [g + u for g, u in zip(gcc_series, usa_series)]
-
     fig_t7 = go.Figure()
-    # GCC at the bottom — show its value inside the bar segment
     fig_t7.add_trace(go.Bar(
         x=x_labels, y=gcc_series, name="GCC (UAE + KSA)",
         marker_color="#6366f1",
-        text=[f"{v:,}" if v > 0 else "" for v in gcc_series],
-        textposition="inside",
-        textfont=dict(color="#e2e8f0", size=11),
-        insidetextanchor="middle",
+        text=[f"{v:,}" for v in gcc_series], textposition="outside",
+        textfont=dict(color="#94a3b8", size=11),
         cliponaxis=False,
         hovertemplate="%{x}<br>GCC: %{y:,}<extra></extra>",
     ))
-    # USA on top — always visible because it stacks above GCC
     fig_t7.add_trace(go.Bar(
         x=x_labels, y=usa_series, name="USA",
         marker_color="#10b981",
-        text=[f"{v:,}" if v > 0 else "" for v in usa_series],
-        textposition="inside",
-        textfont=dict(color="#e2e8f0", size=11),
-        insidetextanchor="middle",
+        text=[f"{v:,}" for v in usa_series], textposition="outside",
+        textfont=dict(color="#94a3b8", size=11),
         cliponaxis=False,
         hovertemplate="%{x}<br>USA: %{y:,}<extra></extra>",
     ))
     fig_t7.update_layout(
-        barmode="stack",  # ← USA stacks on top of GCC, never invisible
+        barmode="group",
+        bargap=0.25, bargroupgap=0.05,
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#e2e8f0", size=11),
         height=340,
@@ -695,14 +688,6 @@ with eL:
         yaxis=dict(gridcolor="rgba(148,163,184,0.15)", zeroline=False),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
-    # Total label on top of each stack
-    for x, t in zip(x_labels, totals_series):
-        if t > 0:
-            fig_t7.add_annotation(
-                x=x, y=t, text=f"<b>{t:,}</b>",
-                showarrow=False, yshift=14,
-                font=dict(color="#cbd5e1", size=11),
-            )
     st.plotly_chart(fig_t7, use_container_width=True)
 
 with eR:
