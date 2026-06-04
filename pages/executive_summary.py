@@ -540,10 +540,45 @@ with rA2:
         label_visibility="collapsed",
     )
 
-# ── KPI Rows B / C / D: Today's Sales | ARR Added Today | CAC MTD (Total / GCC / USA)
+# ── KPI Groups B / C / D: today's snapshot, broken Total | GCC | USA ─────────
+# Each group has a section header above; the three columns just say
+# "Total / GCC / USA" so the metric label doesn't repeat.
 st.markdown("---")
 
-# Sales today
+# Subtle uppercase section-header style (matches the page palette)
+_GROUP_HEADER_CSS = (
+    "font-size:0.78rem; font-weight:600; color:#475569; "
+    "text-transform:uppercase; letter-spacing:.08em; "
+    "margin: 0.4rem 0 0.5rem 0;"
+)
+
+
+def _render_section_metrics(
+    section_title: str,
+    section_help: str,
+    vals: tuple,          # (total_cur, gcc_cur, usa_cur)
+    prev_vals: tuple,     # (total_prev, gcc_prev, usa_prev)
+    fmt_fn,               # str-formatter applied to each value
+    inverse_delta: bool = False,
+) -> None:
+    """Render a section header + 3 columns (Total / GCC / USA)."""
+    st.markdown(
+        f"<div style='{_GROUP_HEADER_CSS}'>{section_title}</div>",
+        unsafe_allow_html=True,
+    )
+    c1, c2, c3 = st.columns(3)
+    deltas = [_delta_pct(v, p) for v, p in zip(vals, prev_vals)]
+    delta_color = "inverse" if inverse_delta else "normal"
+    c1.metric("Total", fmt_fn(vals[0]),
+              delta=_fmt_delta(deltas[0]), delta_color=delta_color,
+              help=section_help if section_help else None)
+    c2.metric("GCC (UAE + KSA)", fmt_fn(vals[1]),
+              delta=_fmt_delta(deltas[1]), delta_color=delta_color)
+    c3.metric("USA", fmt_fn(vals[2]),
+              delta=_fmt_delta(deltas[2]), delta_color=delta_color)
+
+
+# ─── Sales Today ─────────────────────────────────────────────────────────
 sales_today_all = _new_sales_markets(today_ts, today_ts, ALL_MARKETS)
 sales_today_gcc = _new_sales_markets(today_ts, today_ts, GCC_MARKETS)
 sales_today_usa = _new_sales_markets(today_ts, today_ts, USA_MARKETS)
@@ -551,22 +586,17 @@ sales_yest_all  = _new_sales_markets(yesterday_ts, yesterday_ts, ALL_MARKETS)
 sales_yest_gcc  = _new_sales_markets(yesterday_ts, yesterday_ts, GCC_MARKETS)
 sales_yest_usa  = _new_sales_markets(yesterday_ts, yesterday_ts, USA_MARKETS)
 
-rB1, rB2, rB3 = st.columns(3)
-rB1.metric(
-    "TOTAL SALES TODAY", f"{sales_today_all:,}",
-    delta=_fmt_delta(_delta_pct(sales_today_all, sales_yest_all)),
-    help="New machine sales today, gross of offline. Compared to yesterday.",
-)
-rB2.metric(
-    "GCC SALES TODAY (UAE + KSA)", f"{sales_today_gcc:,}",
-    delta=_fmt_delta(_delta_pct(sales_today_gcc, sales_yest_gcc)),
-)
-rB3.metric(
-    "USA SALES TODAY", f"{sales_today_usa:,}",
-    delta=_fmt_delta(_delta_pct(sales_today_usa, sales_yest_usa)),
+_render_section_metrics(
+    "Sales Today",
+    "New machine sales today (gross of offline). Delta compared to yesterday.",
+    (sales_today_all, sales_today_gcc, sales_today_usa),
+    (sales_yest_all,  sales_yest_gcc,  sales_yest_usa),
+    fmt_fn=lambda v: f"{v:,}",
 )
 
-# ARR added today (gross — no churn subtraction)
+st.write("")  # subtle vertical breathing room
+
+# ─── ARR Added Today ─────────────────────────────────────────────────────
 arr_today_all = _arr_added_markets(today_ts, today_ts, ALL_MARKETS)
 arr_today_gcc = _arr_added_markets(today_ts, today_ts, GCC_MARKETS)
 arr_today_usa = _arr_added_markets(today_ts, today_ts, USA_MARKETS)
@@ -574,24 +604,19 @@ arr_yest_all  = _arr_added_markets(yesterday_ts, yesterday_ts, ALL_MARKETS)
 arr_yest_gcc  = _arr_added_markets(yesterday_ts, yesterday_ts, GCC_MARKETS)
 arr_yest_usa  = _arr_added_markets(yesterday_ts, yesterday_ts, USA_MARKETS)
 
-rC1, rC2, rC3 = st.columns(3)
-rC1.metric(
-    "TOTAL ARR ADDED TODAY", fmt_usd(arr_today_all),
-    delta=_fmt_delta(_delta_pct(arr_today_all, arr_yest_all)),
-    help="Annualised value of Machine + Filter subs CREATED today "
-         "(recurring_price × qty × 12 ÷ charge_interval). Gross only — "
-         "today's cancellations aren't subtracted.",
-)
-rC2.metric(
-    "GCC ARR ADDED TODAY", fmt_usd(arr_today_gcc),
-    delta=_fmt_delta(_delta_pct(arr_today_gcc, arr_yest_gcc)),
-)
-rC3.metric(
-    "USA ARR ADDED TODAY", fmt_usd(arr_today_usa),
-    delta=_fmt_delta(_delta_pct(arr_today_usa, arr_yest_usa)),
+_render_section_metrics(
+    "ARR Added Today",
+    "Annualised value of Machine + Filter subs CREATED today "
+    "(recurring_price × qty × 12 ÷ charge_interval). Gross — today's "
+    "cancellations aren't subtracted. Delta compared to yesterday.",
+    (arr_today_all, arr_today_gcc, arr_today_usa),
+    (arr_yest_all,  arr_yest_gcc,  arr_yest_usa),
+    fmt_fn=fmt_usd,
 )
 
-# CAC MTD — denominator excludes offline (B2B / direct) deals
+st.write("")
+
+# ─── CAC · MTD ───────────────────────────────────────────────────────────
 spend_mtd_all  = _spend_markets(mtd_start, today_ts, ALL_MARKETS)
 spend_mtd_gcc  = _spend_markets(mtd_start, today_ts, GCC_MARKETS)
 spend_mtd_usa  = _spend_markets(mtd_start, today_ts, USA_MARKETS)
@@ -612,25 +637,15 @@ cac_prev_all = (spend_prev_all / paid_prev_all) if paid_prev_all > 0 else 0.0
 cac_prev_gcc = (spend_prev_gcc / paid_prev_gcc) if paid_prev_gcc > 0 else 0.0
 cac_prev_usa = (spend_prev_usa / paid_prev_usa) if paid_prev_usa > 0 else 0.0
 
-rD1, rD2, rD3 = st.columns(3)
-rD1.metric(
-    "TOTAL CAC · MTD", fmt_usd(cac_mtd_all) if cac_mtd_all > 0 else "—",
-    delta=_fmt_delta(_delta_pct(cac_mtd_all, cac_prev_all)),
-    delta_color="inverse",
-    help=f"Paid-ad spend ÷ paid-attributable new sales for "
-         f"{mtd_start:%d %b}–{today_ts:%d %b}. Offline (B2B / direct) deals "
-         f"excluded from the denominator. Compared to same {days_into_month}-day "
-         f"window of prior month.",
-)
-rD2.metric(
-    "GCC CAC · MTD", fmt_usd(cac_mtd_gcc) if cac_mtd_gcc > 0 else "—",
-    delta=_fmt_delta(_delta_pct(cac_mtd_gcc, cac_prev_gcc)),
-    delta_color="inverse",
-)
-rD3.metric(
-    "USA CAC · MTD", fmt_usd(cac_mtd_usa) if cac_mtd_usa > 0 else "—",
-    delta=_fmt_delta(_delta_pct(cac_mtd_usa, cac_prev_usa)),
-    delta_color="inverse",
+_render_section_metrics(
+    f"CAC · MTD  ({mtd_start:%d %b}–{today_ts:%d %b})",
+    f"Paid-ad spend ÷ paid-attributable new sales for the month so far. "
+    f"Offline (B2B / direct) deals excluded from the denominator. "
+    f"Delta vs the same {days_into_month}-day window of prior month.",
+    (cac_mtd_all, cac_mtd_gcc, cac_mtd_usa),
+    (cac_prev_all, cac_prev_gcc, cac_prev_usa),
+    fmt_fn=lambda v: fmt_usd(v) if v > 0 else "—",
+    inverse_delta=True,  # lower CAC is better
 )
 
 # ── Row E: Last-7-day chart + KPI table (GCC × USA) ──────────────────────────
