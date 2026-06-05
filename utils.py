@@ -274,26 +274,47 @@ def _parse_dates(series: pd.Series) -> pd.Series:
     """
     Parse date strings supporting:
       • d/m/yyyy            (legacy Recharge tabs)
-      • d/m/yyyy H:M[:S]    (May verified tab, Stripe - USA tab)
-      • yyyy-mm-dd[T...]    (ISO from Shopify GraphQL etc.)
-    Returns UTC-naive datetime series. dayfirst is preferred to avoid
-    interpreting '03/06/2026 20:42' as Mar 6 (US default).
+      • d/m/yyyy H:M[:S]    (May verified tab, older Stripe rows)
+      • yyyy-mm-dd[T| ]H:M[:S]  (new Stripe rows, Shopify GraphQL)
+      • yyyy-mm-dd
+    Returns UTC-naive datetime series.
+
+    Order matters: try ISO formats FIRST when the string starts with a
+    4-digit year, then DD/MM formats. Falling back to pandas auto-detect
+    with dayfirst=True is brittle for ISO strings — `2026-06-04` gets
+    interpreted as Apr 6 because dayfirst flips the 2nd and 3rd fields
+    even when the 1st is unambiguously the year.
     """
     s      = series.astype(str).str.strip()
     result = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
 
-    # Try the explicit DD/MM formats first (covers ~all sheet rows fast).
+    # ── ISO-style (year-first) ─────────────────────────────────────────
+    iso_mask = s.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}")  # starts with YYYY-M-D
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
+                "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ",
+                "%Y-%m-%d"):
+        mask = result.isna() & iso_mask & s.ne("") & s.ne("nan")
+        if not mask.any():
+            break
+        result[mask] = pd.to_datetime(s[mask], format=fmt, errors="coerce")
+
+    # ── DD/MM-style ───────────────────────────────────────────────────
     for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y"):
         mask = result.isna() & s.ne("") & s.ne("nan")
         if not mask.any():
             break
-        parsed = pd.to_datetime(s[mask], format=fmt, errors="coerce")
-        result[mask] = parsed
+        result[mask] = pd.to_datetime(s[mask], format=fmt, errors="coerce")
 
-    # Anything left → pandas auto-detect with dayfirst=True (handles ISO too).
+    # ── Anything left → auto-detect with the right dayfirst by shape ──
     mask = result.isna() & s.ne("") & s.ne("nan")
     if mask.any():
-        result[mask] = pd.to_datetime(s[mask], dayfirst=True, errors="coerce")
+        # Year-first strings get dayfirst=False; everything else dayfirst=True.
+        iso_left = mask & iso_mask
+        non_iso  = mask & ~iso_mask
+        if iso_left.any():
+            result[iso_left] = pd.to_datetime(s[iso_left], errors="coerce")
+        if non_iso.any():
+            result[non_iso]  = pd.to_datetime(s[non_iso], dayfirst=True, errors="coerce")
     return result
 
 
@@ -623,6 +644,21 @@ def _load_recharge_schema_usa_tab(tab_name: str,
 
         parsed_created = _parse_dates(df[created_col])
         parsed_cancel  = _parse_dates(df[cancelled_col]) if cancelled_col else pd.Series(pd.NaT, index=df.index)
+
+        # Diagnostic: warn loudly if any non-empty created_at strings fail to
+        # parse (silent drops have bitten us in the past — e.g. when Stripe
+        # switched from DD/MM/YYYY to ISO timestamps in Jun 2026).
+        raw_nonempty = df[created_col].astype(str).str.strip().replace({"nan": ""}) != ""
+        unparseable = raw_nonempty & parsed_created.isna()
+        if unparseable.any():
+            samples = df.loc[unparseable, created_col].astype(str).head(3).tolist()
+            logger.warning(
+                "[%s] %d rows have a created_at value that _parse_dates "
+                "couldn't read — these will be DROPPED. Samples: %s. "
+                "Add the format to _parse_dates if it's a new convention.",
+                tab_name, int(unparseable.sum()), samples,
+            )
+
         valid_mask = parsed_created.notna()
 
         # Optional date window
@@ -630,6 +666,23 @@ def _load_recharge_schema_usa_tab(tab_name: str,
             valid_mask = valid_mask & (parsed_created >= date_min)
         if date_max is not None:
             valid_mask = valid_mask & (parsed_created < date_max)
+
+        # Diagnostic: warn if the window filter discards parseable rows
+        # (helps surface "Stripe rows being parsed as April" bugs early).
+        window_dropped = parsed_created.notna() & ~valid_mask
+        if window_dropped.any():
+            wd_samples = df.loc[window_dropped].head(3).apply(
+                lambda r: f"{r.get(created_col, '')!r}→{parsed_created.loc[r.name]:%Y-%m-%d}",
+                axis=1,
+            ).tolist()
+            logger.info(
+                "[%s] %d rows parsed OK but fell outside the window "
+                "[%s, %s). Samples: %s",
+                tab_name, int(window_dropped.sum()),
+                date_min.strftime("%Y-%m-%d") if date_min is not None else "−∞",
+                date_max.strftime("%Y-%m-%d") if date_max is not None else "+∞",
+                wd_samples,
+            )
 
         df = df[valid_mask].copy()
         if df.empty:
