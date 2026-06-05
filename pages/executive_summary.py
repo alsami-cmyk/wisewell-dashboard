@@ -487,28 +487,40 @@ st.markdown("---")
 COUNTRY_OPTS = ["All", "UAE", "KSA", "USA"]
 PRODUCT_OPTS = ["All"] + PRODUCT_ORDER  # PRODUCT_ORDER = ["Model 1", "Nano+", "Bubble", "Flat", "Nano Tank"]
 
-# Compact-selectbox CSS, scoped to the filter-row containers via a data attr.
-# Keeps Country/Product filters small so they sit inside the metric card
-# rather than competing with it visually.
+# Compact-selectbox CSS — wrap the Row A filters in a div with class
+# "row-a-filters" so we can shrink ONLY those selectboxes (not every
+# selectbox on the page).
 st.markdown("""
 <style>
-/* Compact selectbox styling for the Row A filters */
-div[data-testid="stHorizontalBlock"] div[data-testid="stSelectbox"] > div > div {
-    min-height: 28px !important;
-    height: 28px !important;
+/* Compact selectbox styling for the Row A filters
+   (scoped via the wrapping .row-a-filters class set below).            */
+.row-a-filters [data-testid="stSelectbox"] {
+    margin: 0 !important;
+}
+/* The button-like control inside the selectbox */
+.row-a-filters [data-testid="stSelectbox"] > div > div,
+.row-a-filters [data-baseweb="select"] > div {
+    min-height: 24px !important;
+    height: 24px !important;
     padding: 0 6px !important;
-    font-size: 0.72rem !important;
+    font-size: 0.7rem !important;
+    line-height: 1 !important;
+    background: rgba(30,41,59,0.6) !important;
+    border-color: rgba(148,163,184,0.25) !important;
 }
-div[data-testid="stHorizontalBlock"] div[data-testid="stSelectbox"] > div > div > div {
-    font-size: 0.72rem !important;
+.row-a-filters [data-baseweb="select"] svg {
+    width: 12px !important;
+    height: 12px !important;
 }
-div[data-testid="stHorizontalBlock"] div[data-testid="stSelectbox"] label {
-    font-size: 0.65rem !important;
-    color: #94a3b8 !important;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+/* Selected-value text */
+.row-a-filters [data-testid="stSelectbox"] [data-baseweb="select"] > div > div {
+    font-size: 0.7rem !important;
     padding: 0 !important;
-    margin-bottom: 2px !important;
+}
+/* Hide the underlying Streamlit label (we render our own tiny one) */
+.row-a-filters [data-testid="stSelectbox"] label,
+.row-a-filters [data-testid="stWidgetLabel"] {
+    display: none !important;
 }
 /* Handhal callout card */
 .handhal-callout {
@@ -554,16 +566,31 @@ def _filtered_metric_card(
     key_prefix: str,
     help_text: str,
 ) -> None:
-    """Render a metric card with two inline compact filters (Country/Product)."""
-    # Header (title) + compact filters row
-    t_col, c_col, p_col = st.columns([2.4, 1, 1])
-    t_col.markdown(
+    """Render a metric card with two compact filters tucked under the title."""
+    # Title row
+    st.markdown(
         f"<div style='font-size:0.78rem; color:#64748b; text-transform:uppercase; "
-        f"letter-spacing:.05em; padding-top:24px;'>{title}</div>",
+        f"letter-spacing:.05em; margin-bottom:6px;'>{title}</div>",
         unsafe_allow_html=True,
     )
-    country = c_col.selectbox("Country", COUNTRY_OPTS, key=f"{key_prefix}_country")
-    product = p_col.selectbox("Product", PRODUCT_OPTS, key=f"{key_prefix}_product")
+
+    # Tiny filter row (wrapped in .row-a-filters → triggers the compact CSS)
+    st.markdown("<div class='row-a-filters'>", unsafe_allow_html=True)
+    label_col, c_col, p_col, _spacer = st.columns([1.0, 1.2, 1.2, 0.6])
+    label_col.markdown(
+        "<div style='font-size:0.62rem; color:#64748b; letter-spacing:.04em; "
+        "padding-top:5px; text-align:right;'>FILTERS</div>",
+        unsafe_allow_html=True,
+    )
+    country = c_col.selectbox(
+        "Country", COUNTRY_OPTS, key=f"{key_prefix}_country",
+        label_visibility="collapsed",
+    )
+    product = p_col.selectbox(
+        "Product", PRODUCT_OPTS, key=f"{key_prefix}_product",
+        label_visibility="collapsed",
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
 
     mkts = ALL_MARKETS if country == "All" else [country]
     prod = None if product == "All" else product
