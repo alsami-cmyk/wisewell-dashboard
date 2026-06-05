@@ -613,18 +613,23 @@ with rA3:
         hh_units   = 0
         hh_revenue = 0.0
 
-    # Try to embed the logo if it's been saved to assets/.
+    # Embed the white-on-transparent logo (pre-processed from the original
+    # dark line-art so it renders cleanly against the dashboard's dark
+    # backdrop without relying on CSS filter hacks). Falls back to the
+    # original if the white version isn't there yet.
     import os, base64
-    logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                             "assets", "handhal_logo.png")
+    _assets = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
+    logo_path = os.path.join(_assets, "handhal_logo_white.png")
+    if not os.path.exists(logo_path):
+        logo_path = os.path.join(_assets, "handhal_logo.png")
     logo_html = ""
     if os.path.exists(logo_path):
         with open(logo_path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("ascii")
         logo_html = (
             f"<img src='data:image/png;base64,{b64}' "
-            f"style='max-height:46px; opacity:0.85; margin:0 auto 8px auto; "
-            f"display:block; filter:invert(1) brightness(2);' alt='Handhal'/>"
+            f"style='max-height:54px; margin:0 auto 8px auto; "
+            f"display:block;' alt='Handhal'/>"
         )
     else:
         logo_html = (
