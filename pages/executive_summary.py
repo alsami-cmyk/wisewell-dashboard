@@ -488,39 +488,83 @@ COUNTRY_OPTS = ["All", "UAE", "KSA", "USA"]
 PRODUCT_OPTS = ["All"] + PRODUCT_ORDER  # PRODUCT_ORDER = ["Model 1", "Nano+", "Bubble", "Flat", "Nano Tank"]
 
 # Compact-selectbox CSS — wrap the Row A filters in a div with class
-# "row-a-filters" so we can shrink ONLY those selectboxes (not every
-# selectbox on the page).
+# "row-a-filters" so we shrink ONLY those selectboxes. Streamlit's
+# selectbox uses BaseWeb internals that ignore most overrides unless
+# you target every descendant and use !important everywhere. The
+# wildcard rule (.row-a-filters * { font-size … }) is the nuclear
+# option and is the only way to reliably catch the deeply nested
+# value text on Streamlit's current DOM.
 st.markdown("""
 <style>
-/* Compact selectbox styling for the Row A filters
-   (scoped via the wrapping .row-a-filters class set below).            */
+/* NUCLEAR: shrink every text node inside the filter wrapper. */
+.row-a-filters,
+.row-a-filters * {
+    font-size: 11px !important;
+    line-height: 1.1 !important;
+}
+
+/* Selectbox outer container */
 .row-a-filters [data-testid="stSelectbox"] {
     margin: 0 !important;
-}
-/* The button-like control inside the selectbox */
-.row-a-filters [data-testid="stSelectbox"] > div > div,
-.row-a-filters [data-baseweb="select"] > div {
-    min-height: 24px !important;
-    height: 24px !important;
-    padding: 0 6px !important;
-    font-size: 0.7rem !important;
-    line-height: 1 !important;
-    background: rgba(30,41,59,0.6) !important;
-    border-color: rgba(148,163,184,0.25) !important;
-}
-.row-a-filters [data-baseweb="select"] svg {
-    width: 12px !important;
-    height: 12px !important;
-}
-/* Selected-value text */
-.row-a-filters [data-testid="stSelectbox"] [data-baseweb="select"] > div > div {
-    font-size: 0.7rem !important;
     padding: 0 !important;
 }
-/* Hide the underlying Streamlit label (we render our own tiny one) */
-.row-a-filters [data-testid="stSelectbox"] label,
-.row-a-filters [data-testid="stWidgetLabel"] {
+
+/* Hide every label-like sibling (default Streamlit label) */
+.row-a-filters [data-testid="stWidgetLabel"],
+.row-a-filters [data-testid="stSelectbox"] > label,
+.row-a-filters [data-testid="stSelectbox"] [data-testid="stWidgetLabel"] {
     display: none !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+/* BaseWeb select root + its inner control rows.
+   Heights are forced everywhere to win the BaseWeb cascade.            */
+.row-a-filters [data-baseweb="select"],
+.row-a-filters [data-baseweb="select"] > div,
+.row-a-filters [data-baseweb="select"] > div > div,
+.row-a-filters [data-baseweb="select"] > div > div > div {
+    min-height: 22px !important;
+    height: 22px !important;
+    line-height: 1.1 !important;
+    border-radius: 6px !important;
+}
+
+/* The clickable surface — give it a subtle dark fill that matches the page */
+.row-a-filters [data-baseweb="select"] > div {
+    background: rgba(30,41,59,0.55) !important;
+    border: 1px solid rgba(148,163,184,0.22) !important;
+    padding: 0 6px !important;
+}
+
+/* Inner control container BaseWeb wraps the value in — drop its padding  */
+.row-a-filters [data-baseweb="select"] [class*="ControlContainer"],
+.row-a-filters [data-baseweb="select"] [class*="ValueContainer"],
+.row-a-filters [data-baseweb="select"] > div > div {
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+/* Selected-value text — explicitly target the displayed value */
+.row-a-filters [data-baseweb="select"] [data-baseweb="select-option"],
+.row-a-filters [data-baseweb="select"] span,
+.row-a-filters [data-baseweb="select"] div {
+    font-size: 11px !important;
+    color: #cbd5e1 !important;
+}
+
+/* Chevron icon */
+.row-a-filters [data-baseweb="select"] svg {
+    width: 11px !important;
+    height: 11px !important;
+}
+/* Some Streamlit versions render the chevron inside a wrapper div */
+.row-a-filters [data-baseweb="select"] [class*="IndicatorsContainer"],
+.row-a-filters [data-baseweb="select"] [class*="Indicator"] {
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 14px !important;
 }
 /* Handhal callout card */
 .handhal-callout {
