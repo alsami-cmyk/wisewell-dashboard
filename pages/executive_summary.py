@@ -481,63 +481,180 @@ yesterday_ts  = today_ts - pd.Timedelta(days=1)
 t7_start      = today_ts - pd.Timedelta(days=6)
 t7_end        = today_ts
 
-# ── KPI Row A: User Base + ARR with inline Country/Product filters ─────────
+# ── KPI Row A: User Base · ARR · Handhal Six-Pack ──────────────────────────
 st.markdown("---")
 
 COUNTRY_OPTS = ["All", "UAE", "KSA", "USA"]
 PRODUCT_OPTS = ["All"] + PRODUCT_ORDER  # PRODUCT_ORDER = ["Model 1", "Nano+", "Bubble", "Flat", "Nano Tank"]
 
-rA1, rA2 = st.columns(2)
+# Compact-selectbox CSS, scoped to the filter-row containers via a data attr.
+# Keeps Country/Product filters small so they sit inside the metric card
+# rather than competing with it visually.
+st.markdown("""
+<style>
+/* Compact selectbox styling for the Row A filters */
+div[data-testid="stHorizontalBlock"] div[data-testid="stSelectbox"] > div > div {
+    min-height: 28px !important;
+    height: 28px !important;
+    padding: 0 6px !important;
+    font-size: 0.72rem !important;
+}
+div[data-testid="stHorizontalBlock"] div[data-testid="stSelectbox"] > div > div > div {
+    font-size: 0.72rem !important;
+}
+div[data-testid="stHorizontalBlock"] div[data-testid="stSelectbox"] label {
+    font-size: 0.65rem !important;
+    color: #94a3b8 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0 !important;
+    margin-bottom: 2px !important;
+}
+/* Handhal callout card */
+.handhal-callout {
+    background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+    border: 1px solid rgba(148,163,184,0.18);
+    border-radius: 12px;
+    padding: 12px 14px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+}
+.handhal-callout .title {
+    font-size: 0.68rem;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+}
+.handhal-callout .value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #e2e8f0;
+    line-height: 1.1;
+}
+.handhal-callout .sub {
+    font-size: 0.78rem;
+    color: #cbd5e1;
+    margin-top: 2px;
+}
+.handhal-callout .delta-pos { color: #22c55e; font-size: 0.78rem; font-weight: 600; margin-top: 4px; }
+.handhal-callout .delta-neg { color: #ef4444; font-size: 0.78rem; font-weight: 600; margin-top: 4px; }
+.handhal-callout .delta-neu { color: #64748b; font-size: 0.78rem; font-weight: 600; margin-top: 4px; }
+</style>
+""", unsafe_allow_html=True)
 
-with rA1:
-    # Header row: title + 2 dropdowns
-    t_col, c_col, p_col = st.columns([2.0, 1.1, 1.1])
+
+def _filtered_metric_card(
+    title: str,
+    formatter,
+    value_fn,
+    *,
+    key_prefix: str,
+    help_text: str,
+) -> None:
+    """Render a metric card with two inline compact filters (Country/Product)."""
+    # Header (title) + compact filters row
+    t_col, c_col, p_col = st.columns([2.4, 1, 1])
     t_col.markdown(
-        "<div style='font-size:0.78rem; color:#64748b; text-transform:uppercase; "
-        "letter-spacing:.05em; padding-top:34px;'>TOTAL USER BASE</div>",
+        f"<div style='font-size:0.78rem; color:#64748b; text-transform:uppercase; "
+        f"letter-spacing:.05em; padding-top:24px;'>{title}</div>",
         unsafe_allow_html=True,
     )
-    ub_country = c_col.selectbox("Country", COUNTRY_OPTS, key="ub_country",
-                                 label_visibility="visible")
-    ub_product = p_col.selectbox("Product", PRODUCT_OPTS, key="ub_product",
-                                 label_visibility="visible")
-    ub_mkts = ALL_MARKETS if ub_country == "All" else [ub_country]
-    ub_prod = None if ub_product == "All" else ub_product
-    cur_user_base  = _user_base_filtered(today_ts,  ub_mkts, ub_prod)
-    prev_user_base = _user_base_filtered(prev_end,  ub_mkts, ub_prod)
+    country = c_col.selectbox("Country", COUNTRY_OPTS, key=f"{key_prefix}_country")
+    product = p_col.selectbox("Product", PRODUCT_OPTS, key=f"{key_prefix}_product")
+
+    mkts = ALL_MARKETS if country == "All" else [country]
+    prod = None if product == "All" else product
+    cur  = value_fn(today_ts, mkts, prod)
+    prev = value_fn(prev_end, mkts, prod)
+
     st.metric(
-        label="Total User Base",
-        value=f"{cur_user_base:,}",
-        delta=_fmt_delta(_delta_pct(cur_user_base, prev_user_base)),
-        help=f"Active machine subscribers + active ownership · "
-             f"Country={ub_country} · Product={ub_product}. "
-             f"Delta vs same MTD-day of prior month ({prev_end:%d %b %Y}).",
+        label=title,
+        value=formatter(cur),
+        delta=_fmt_delta(_delta_pct(cur, prev)),
+        help=f"{help_text}  ·  Country={country}  ·  Product={product}",
         label_visibility="collapsed",
+    )
+
+
+rA1, rA2, rA3 = st.columns([4, 4, 3])
+
+with rA1:
+    _filtered_metric_card(
+        "TOTAL USER BASE",
+        formatter=lambda v: f"{v:,}",
+        value_fn=_user_base_filtered,
+        key_prefix="ub",
+        help_text=f"Active machine subscribers + active ownership. "
+                  f"Delta vs same MTD-day of prior month ({prev_end:%d %b %Y}).",
     )
 
 with rA2:
-    t_col, c_col, p_col = st.columns([2.0, 1.1, 1.1])
-    t_col.markdown(
-        "<div style='font-size:0.78rem; color:#64748b; text-transform:uppercase; "
-        "letter-spacing:.05em; padding-top:34px;'>TOTAL ARR (USD)</div>",
-        unsafe_allow_html=True,
+    _filtered_metric_card(
+        "TOTAL ARR (USD)",
+        formatter=fmt_usd,
+        value_fn=_arr_filtered,
+        key_prefix="arr",
+        help_text=f"Annualised run-rate from active Machine + Filter subs. "
+                  f"Delta vs same MTD-day of prior month ({prev_end:%d %b %Y}).",
     )
-    arr_country = c_col.selectbox("Country", COUNTRY_OPTS, key="arr_country",
-                                  label_visibility="visible")
-    arr_product = p_col.selectbox("Product", PRODUCT_OPTS, key="arr_product",
-                                  label_visibility="visible")
-    arr_mkts = ALL_MARKETS if arr_country == "All" else [arr_country]
-    arr_prod = None if arr_product == "All" else arr_product
-    cur_arr  = _arr_filtered(today_ts, arr_mkts, arr_prod)
-    prev_arr = _arr_filtered(prev_end, arr_mkts, arr_prod)
-    st.metric(
-        label="Total ARR",
-        value=fmt_usd(cur_arr),
-        delta=_fmt_delta(_delta_pct(cur_arr, prev_arr)),
-        help=f"Annualised run-rate from active Machine + Filter subs · "
-             f"Country={arr_country} · Product={arr_product}. "
-             f"Delta vs same MTD-day of prior month ({prev_end:%d %b %Y}).",
-        label_visibility="collapsed",
+
+with rA3:
+    # ── Handhal Six-Pack callout ─────────────────────────────────────────────
+    from utils import load_handhal_six_pack
+    hh = load_handhal_six_pack()
+
+    # MTD units and prior-MTD comparison
+    if not hh.empty:
+        hh_mtd_mask  = (hh["date"] >= mtd_start) & (hh["date"] <= today_ts)
+        hh_prev_mask = (hh["date"] >= prev_start) & (hh["date"] <= prev_end)
+        hh_units     = int(hh.loc[hh_mtd_mask, "qty"].sum())
+        hh_units_prev= int(hh.loc[hh_prev_mask, "qty"].sum())
+        hh_revenue   = float(hh.loc[hh_mtd_mask, "revenue_aed"].sum())
+    else:
+        hh_units = hh_units_prev = 0
+        hh_revenue = 0.0
+
+    delta_pct = _delta_pct(hh_units, hh_units_prev)
+    if delta_pct is None:
+        delta_html = "<div class='delta-neu'>—</div>"
+    else:
+        sign = "+" if delta_pct >= 0 else ""
+        cls  = "delta-pos" if delta_pct >= 0 else "delta-neg"
+        delta_html = f"<div class='{cls}'>{sign}{delta_pct:.1f}% vs prior period</div>"
+
+    # Try to embed the logo if it's been saved to assets/.
+    import os, base64
+    logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                             "assets", "handhal_logo.png")
+    logo_html = ""
+    if os.path.exists(logo_path):
+        with open(logo_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+        logo_html = (
+            f"<img src='data:image/png;base64,{b64}' "
+            f"style='max-height:46px; opacity:0.85; margin:0 auto 8px auto; "
+            f"display:block; filter:invert(1) brightness(2);' alt='Handhal'/>"
+        )
+    else:
+        logo_html = (
+            "<div style='font-size:0.7rem; color:#475569; text-align:center; "
+            "padding:14px 0;'>(logo: save to assets/handhal_logo.png)</div>"
+        )
+
+    st.markdown(
+        f"""
+        <div class='handhal-callout'>
+            {logo_html}
+            <div class='title'>HANDHAL SIX-PACK SALES</div>
+            <div class='value'>{hh_units:,} <span style='font-size:0.85rem; color:#94a3b8; font-weight:500;'>units · MTD</span></div>
+            <div class='sub'>AED {hh_revenue:,.0f}</div>
+            {delta_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
 # ── KPI Groups B / C / D: today's snapshot, broken Total | GCC | USA ─────────

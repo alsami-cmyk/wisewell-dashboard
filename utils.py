@@ -979,6 +979,82 @@ def load_shopify_ownership() -> pd.DataFrame:
     return pd.DataFrame(records, columns=["date", "market", "product", "qty"])
 
 
+# SKU for the Handhal six-pack water bottle line (UAE). Lineitem sku
+# cells in Shopify - UAE may pipe-delimit multiple SKUs from the same
+# order (e.g. "six-uae-aluminum-bottles-with-caps | WISEWELL_NANO-Sub")
+# with corresponding pipe-delimited Lineitem quantity values.
+HANDHAL_SKU = "six-uae-aluminum-bottles-with-caps"
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_handhal_six_pack() -> pd.DataFrame:
+    """
+    Handhal Six-Pack (aluminium bottle) sales from Shopify - UAE.
+
+    Matches the SKU `six-uae-aluminum-bottles-with-caps` inside the
+    pipe-delimited `Lineitem sku` cells. For each matching position the
+    corresponding `Lineitem quantity` slot gives the units. Unit revenue
+    is also pipe-delimited inside `Subtotal`; we use it when present and
+    skip silently otherwise (revenue is informational, units are the
+    primary KPI).
+
+    Returns: date (Timestamp, midnight), qty (int), revenue_aed (float)
+    One row per order line that contains the SKU.
+    """
+    raw_data, _errors, _elapsed = _fetch_all_tabs()
+    rows = raw_data.get("Shopify - UAE", [])
+    if len(rows) < 2:
+        return pd.DataFrame(columns=["date", "qty", "revenue_aed"])
+
+    headers = [h.strip() for h in rows[0]]
+    n       = len(headers)
+    padded  = [r[:n] + [""] * max(0, n - len(r)) for r in rows[1:]]
+    df      = pd.DataFrame(padded, columns=headers)
+
+    col_map = {c.lower(): c for c in df.columns}
+    date_col = col_map.get("created at")
+    sku_col  = col_map.get("lineitem sku")
+    qty_col  = col_map.get("lineitem quantity")
+    subt_col = col_map.get("subtotal")
+    if not all([date_col, sku_col, qty_col]):
+        logger.warning(
+            "load_handhal_six_pack: Shopify - UAE missing required col "
+            "(date=%s, sku=%s, qty=%s)", date_col, sku_col, qty_col,
+        )
+        return pd.DataFrame(columns=["date", "qty", "revenue_aed"])
+
+    parsed_date = _parse_dates(df[date_col]).dt.normalize()
+
+    records = []
+    for idx, row in df.iterrows():
+        sku_raw = str(row.get(sku_col, "")).strip()
+        if HANDHAL_SKU not in sku_raw.lower():
+            continue
+        sku_list = [s.strip().lower() for s in sku_raw.split("|")]
+        qty_list = [s.strip() for s in str(row.get(qty_col, "")).split("|")]
+        sub_list = [s.strip() for s in str(row.get(subt_col, "")).split(",")] if subt_col else []
+
+        # Walk paired positions to extract this SKU's units & subtotal
+        for pos, sku in enumerate(sku_list):
+            if sku != HANDHAL_SKU:
+                continue
+            try:
+                qty = int(float(qty_list[pos])) if pos < len(qty_list) else 0
+            except (ValueError, IndexError):
+                qty = 0
+            try:
+                rev = float(sub_list[pos]) if pos < len(sub_list) else 0.0
+            except (ValueError, IndexError):
+                rev = 0.0
+            d = parsed_date.iloc[idx]
+            if qty > 0 and pd.notna(d):
+                records.append((d, qty, rev))
+
+    if not records:
+        return pd.DataFrame(columns=["date", "qty", "revenue_aed"])
+    return pd.DataFrame(records, columns=["date", "qty", "revenue_aed"])
+
+
 def _load_offline_generic(tab_name: str) -> pd.DataFrame:
     """
     Shared loader for Offline - Subscriptions and Offline - Ownership.
