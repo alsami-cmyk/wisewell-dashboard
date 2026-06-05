@@ -602,28 +602,16 @@ with rA2:
     )
 
 with rA3:
-    # ── Handhal Six-Pack callout ─────────────────────────────────────────────
+    # ── Handhal Six-Pack callout (all-time since launch end-May 2026) ────────
     from utils import load_handhal_six_pack
     hh = load_handhal_six_pack()
 
-    # MTD units and prior-MTD comparison
     if not hh.empty:
-        hh_mtd_mask  = (hh["date"] >= mtd_start) & (hh["date"] <= today_ts)
-        hh_prev_mask = (hh["date"] >= prev_start) & (hh["date"] <= prev_end)
-        hh_units     = int(hh.loc[hh_mtd_mask, "qty"].sum())
-        hh_units_prev= int(hh.loc[hh_prev_mask, "qty"].sum())
-        hh_revenue   = float(hh.loc[hh_mtd_mask, "revenue_aed"].sum())
+        hh_units   = int(hh["qty"].sum())
+        hh_revenue = float(hh["revenue_aed"].sum())
     else:
-        hh_units = hh_units_prev = 0
+        hh_units   = 0
         hh_revenue = 0.0
-
-    delta_pct = _delta_pct(hh_units, hh_units_prev)
-    if delta_pct is None:
-        delta_html = "<div class='delta-neu'>—</div>"
-    else:
-        sign = "+" if delta_pct >= 0 else ""
-        cls  = "delta-pos" if delta_pct >= 0 else "delta-neg"
-        delta_html = f"<div class='{cls}'>{sign}{delta_pct:.1f}% vs prior period</div>"
 
     # Try to embed the logo if it's been saved to assets/.
     import os, base64
@@ -649,9 +637,8 @@ with rA3:
         <div class='handhal-callout'>
             {logo_html}
             <div class='title'>HANDHAL SIX-PACK SALES</div>
-            <div class='value'>{hh_units:,} <span style='font-size:0.85rem; color:#94a3b8; font-weight:500;'>units · MTD</span></div>
-            <div class='sub'>AED {hh_revenue:,.0f}</div>
-            {delta_html}
+            <div class='value'>{hh_units:,} <span style='font-size:0.85rem; color:#94a3b8; font-weight:500;'>6-packs</span></div>
+            <div class='sub'>AED {hh_revenue:,.0f}  ·  all-time since launch</div>
         </div>
         """,
         unsafe_allow_html=True,
