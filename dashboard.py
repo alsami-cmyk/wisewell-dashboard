@@ -229,6 +229,7 @@ pg = st.navigation([
     st.Page("pages/test.py",              title="Sales",             icon="📈"),
     st.Page("pages/test2.py",             title="Retention",         icon="🔄"),
     st.Page("pages/cohort.py",            title="Cohort Analysis",   icon="📊"),
+    st.Page("pages/sku_breakdown.py",     title="SKU Breakdown",     icon="📦"),
     st.Page("pages/paid_ads.py",          title="Paid Ads Analysis", icon="📢"),
     st.Page("pages/paid_ads2.py",         title="Paid Ads 2",        icon="🎯"),
 ])

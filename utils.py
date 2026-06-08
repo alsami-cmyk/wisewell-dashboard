@@ -461,6 +461,7 @@ def _fetch_all_tabs() -> tuple[dict[str, list], dict[str, str], float]:
 
 _US_VERIFIED_EMPTY_SCHEMA = [
     "subscription_id", "customer_email", "status", "product_title",
+    "variant_title", "sku",
     "recurring_price", "quantity", "charge_interval_frequency",
     "created_at_dt", "cancelled_at_dt", "is_true_cancel",
     "cancellation_reason", "market", "currency", "category",
@@ -580,6 +581,8 @@ def _load_apr_clean_list() -> pd.DataFrame:
         out["customer_email"]             = df[email_col].astype(str).str.strip() if email_col else ""
         out["status"]                     = "ACTIVE"
         out["product_title"]              = df[prod_col].astype(str).str.strip()
+        out["variant_title"]              = ""  # CLEAN LIST doesn't track variant
+        out["sku"]                        = ""
         out["recurring_price"]            = out["product_title"].map(US_PRICE_MAP).fillna(0.0)
         out["quantity"]                   = 1
         out["charge_interval_frequency"]  = 1.0
@@ -628,14 +631,16 @@ def _load_recharge_schema_usa_tab(tab_name: str,
                 if k.lower() in cmap: return cmap[k.lower()]
             return None
 
-        sub_col    = _col("subscription_id")
-        email_col  = _col("customer_email", "Customer email", "Email")
-        status_col = _col("status")
-        prod_col   = _col("product_title", "Product Title")
-        price_col  = _col("recurring_price")
-        qty_col    = _col("quantity")
-        freq_col   = _col("charge_interval_frequency")
-        created_col = _col("created_at", "Created At")
+        sub_col      = _col("subscription_id")
+        email_col    = _col("customer_email", "Customer email", "Email")
+        status_col   = _col("status")
+        prod_col     = _col("product_title", "Product Title")
+        variant_col  = _col("variant_title", "Variant Title")
+        sku_col      = _col("sku", "SKU")
+        price_col    = _col("recurring_price")
+        qty_col      = _col("quantity")
+        freq_col     = _col("charge_interval_frequency")
+        created_col  = _col("created_at", "Created At")
         cancelled_col = _col("cancelled_at", "Cancelled At")
 
         if not (created_col and prod_col):
@@ -700,6 +705,8 @@ def _load_recharge_schema_usa_tab(tab_name: str,
         out["customer_email"]  = df[email_col].astype(str).str.strip() if email_col else ""
         out["status"]          = raw_status.where(~is_cancelled, "CANCELLED").where(is_cancelled, "ACTIVE")
         out["product_title"]   = df[prod_col].astype(str).str.strip()
+        out["variant_title"]   = df[variant_col].astype(str).str.strip() if variant_col else ""
+        out["sku"]             = df[sku_col].astype(str).str.strip() if sku_col else ""
         out["recurring_price"] = pd.to_numeric(df[price_col], errors="coerce").fillna(0.0) if price_col else 0.0
         out["quantity"]        = pd.to_numeric(df[qty_col], errors="coerce").fillna(1).astype(int) if qty_col else 1
         out["quantity"]        = out["quantity"].clip(lower=1)
@@ -886,11 +893,16 @@ def load_recharge_full() -> pd.DataFrame:
 
     keep = [
         "subscription_id", "customer_email", "status",
-        "product_title", "recurring_price", "quantity",
+        "product_title", "variant_title", "sku",
+        "recurring_price", "quantity",
         "charge_interval_frequency", "created_at_dt", "cancelled_at_dt",
         "is_true_cancel", "cancellation_reason",
         "market", "currency", "category", "product", "arr_local",
     ]
+    # Ensure variant_title / sku exist even if a market's tab lacks them
+    for c in ("variant_title", "sku"):
+        if c not in df.columns:
+            df[c] = ""
     df = df[[c for c in keep if c in df.columns]].copy()
 
     # ── USA verified-only override ────────────────────────────────────────
@@ -984,6 +996,120 @@ def load_shopify_ownership() -> pd.DataFrame:
 # order (e.g. "six-uae-aluminum-bottles-with-caps | WISEWELL_NANO-Sub")
 # with corresponding pipe-delimited Lineitem quantity values.
 HANDHAL_SKU = "six-uae-aluminum-bottles-with-caps"
+
+
+# Map raw variant_title / SKU-derived hints to a normalised colour.
+# Products with no real colour split (Bubble, Flat) collapse to "Single".
+def _normalise_colour(product: str | None, variant: str, sku: str) -> str:
+    """
+    Normalise variant info into one of: 'Black', 'White', 'Single', 'Unspecified'.
+
+    - Bubble + Flat use single-colour conventions → 'Single' regardless of
+      what the source says (some Recharge rows still tag them 'Black').
+    - For Model 1 / Nano+ / Nano Tank, parse the variant string AND the SKU
+      suffix because not every row sets both.
+    """
+    if product in ("Bubble", "Flat"):
+        return "Single"
+    v = (variant or "").strip().lower()
+    s = (sku or "").strip().upper()
+    if "white" in v or "_WHITE" in s or s.endswith("-002") or s.endswith("WHITE"):
+        return "White"
+    if "black" in v or "_BLACK" in s or s.endswith("-001") or s.endswith("BLACK"):
+        return "Black"
+    return "Unspecified"
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_sku_sales(start_dt: pd.Timestamp | None = None) -> pd.DataFrame:
+    """
+    Unified SKU-level sales for the inventory / supply-chain team.
+
+    Combines:
+      • Recharge subscriptions (UAE + KSA + USA verified + Stripe-USA),
+        Machine category only
+      • Shopify - UAE / KSA ownership rows (parsed from Lineitem sku +
+        Lineitem name for variant info)
+
+    Returns: date (Timestamp, midnight), market, product, variant,
+             colour (normalised), sku, channel ('Subscription'/'Ownership'),
+             qty (int)
+
+    `start_dt` defaults to 2026-01-01 (inventory tracking horizon).
+    """
+    sd = (start_dt or pd.Timestamp("2026-01-01")).normalize()
+    records: list[tuple] = []
+
+    # ── 1. Recharge subscriptions ─────────────────────────────────────────────
+    rc = load_recharge_full()
+    if not rc.empty:
+        m = rc[
+            (rc["category"] == "Machine")
+            & rc["created_at_dt"].notna()
+            & (rc["created_at_dt"] >= sd)
+        ]
+        for _, r in m.iterrows():
+            colour = _normalise_colour(r["product"], r.get("variant_title", ""), r.get("sku", ""))
+            records.append((
+                r["created_at_dt"].normalize(),
+                r["market"], r["product"], r.get("variant_title", ""), colour,
+                r.get("sku", ""), "Subscription", int(r["quantity"]),
+            ))
+
+    # ── 2. Shopify UAE/KSA ownership (parse line items for variant) ──────────
+    raw, _e, _t = _fetch_all_tabs()
+    own_col_map = dict(SHOPIFY_OWN_COLS)  # product → own column
+    for tab, market in [("Shopify - UAE", "UAE"), ("Shopify - KSA", "KSA")]:
+        rows = raw.get(tab, [])
+        if len(rows) < 2:
+            continue
+        header = [h.strip() for h in rows[0]]
+        n = len(header)
+        padded = [r[:n] + [""] * max(0, n - len(r)) for r in rows[1:]]
+        df = pd.DataFrame(padded, columns=header)
+
+        date_col = next((c for c in df.columns if c.strip().lower() == "created at"), None)
+        if not date_col:
+            continue
+        df["_d"] = _parse_dates(df[date_col]).dt.normalize()
+        df = df[df["_d"] >= sd]
+        if df.empty:
+            continue
+
+        for _, row in df.iterrows():
+            for product, own_col in SHOPIFY_OWN_COLS:
+                try:
+                    qty = int(float(row.get(own_col, "") or 0))
+                except (ValueError, TypeError):
+                    qty = 0
+                if qty <= 0:
+                    continue
+                # Variant heuristic: scan ANY pipe-delimited sku / name
+                # cell for matching product + colour keywords.
+                sku_blob = str(row.get("Lineitem sku", ""))
+                name_blob = str(row.get("Lineitem name", ""))
+                colour = _normalise_colour(product, name_blob, sku_blob)
+                # Try to pick out the matching pipe segment for a cleaner SKU
+                sku_for_row = ""
+                for piece in sku_blob.split("|"):
+                    p = piece.strip()
+                    if product.replace(" ", "").upper().replace("+", "PLUS") in p.upper().replace("+", "PLUS"):
+                        sku_for_row = p
+                        break
+                records.append((
+                    row["_d"], market, product, "", colour,
+                    sku_for_row, "Ownership", qty,
+                ))
+
+    if not records:
+        return pd.DataFrame(columns=[
+            "date", "market", "product", "variant", "colour",
+            "sku", "channel", "qty",
+        ])
+    return pd.DataFrame(records, columns=[
+        "date", "market", "product", "variant", "colour",
+        "sku", "channel", "qty",
+    ])
 
 
 @st.cache_data(ttl=300, show_spinner=False)
