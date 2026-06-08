@@ -487,6 +487,15 @@ st.markdown("---")
 COUNTRY_OPTS = ["All", "UAE", "KSA", "USA"]
 PRODUCT_OPTS = ["All"] + PRODUCT_ORDER  # PRODUCT_ORDER = ["Model 1", "Nano+", "Bubble", "Flat", "Nano Tank"]
 
+# Subtle uppercase section-header style — used by both the MTD-vs-Target
+# meters and the today's-snapshot KPI groups below them. Defined here so
+# it's available before either block runs.
+_GROUP_HEADER_CSS = (
+    "font-size:0.78rem; font-weight:600; color:#475569; "
+    "text-transform:uppercase; letter-spacing:.08em; "
+    "margin: 0.4rem 0 0.5rem 0;"
+)
+
 # Compact-selectbox CSS — wrap the Row A filters in a div with class
 # "row-a-filters" so we shrink ONLY those selectboxes. Streamlit's
 # selectbox uses BaseWeb internals that ignore most overrides unless
@@ -852,14 +861,6 @@ else:
             _render_target_bar("USA TARGET", usa_mtd, usa_target),
             unsafe_allow_html=True,
         )
-
-
-# Subtle uppercase section-header style (matches the page palette)
-_GROUP_HEADER_CSS = (
-    "font-size:0.78rem; font-weight:600; color:#475569; "
-    "text-transform:uppercase; letter-spacing:.08em; "
-    "margin: 0.4rem 0 0.5rem 0;"
-)
 
 
 def _render_section_metrics(
