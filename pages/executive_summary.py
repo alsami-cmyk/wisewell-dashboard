@@ -828,6 +828,133 @@ _render_section_metrics(
     inverse_delta=True,  # lower CAC is better
 )
 
+st.write("")
+
+# ── MTD vs Target meters (GCC | USA) ─────────────────────────────────────────
+# Two side-by-side progress bars showing how MTD machine sales are tracking
+# against the monthly target from the Projections tab. GCC = UAE + KSA on
+# the left, USA on the right. Each bar shows: actual / target with %,
+# a linear-pace marker, on-track/behind status, and projected end-of-month.
+st.markdown(
+    f"<div style='{_GROUP_HEADER_CSS}'>MTD vs Target  "
+    f"({mtd_start:%b %Y})</div>",
+    unsafe_allow_html=True,
+)
+
+_proj_dict = load_projections()
+_proj_month = _proj_dict.get(mtd_start.strftime("%Y-%m-%d"))
+
+if _proj_month is None:
+    st.caption(
+        f"ℹ️ No projection found for **{mtd_start:%b %Y}** in the "
+        f"Projections tab — add a row there to enable target tracking."
+    )
+else:
+    _by_market = _proj_month.get("by_market", {}) or {}
+    gcc_target = int((_by_market.get("UAE") or 0) + (_by_market.get("KSA") or 0))
+    usa_target = int(_by_market.get("USA") or 0)
+
+    gcc_mtd = _new_sales_markets(mtd_start, today_ts, GCC_MARKETS)
+    usa_mtd = _new_sales_markets(mtd_start, today_ts, USA_MARKETS)
+
+
+    def _render_target_bar(label: str, current: int, target: int) -> str:
+        """Render a single target-progress card as an HTML string."""
+        if target <= 0:
+            return (
+                "<div style='padding:14px 16px; background:rgba(30,41,59,0.5); "
+                "border-radius:12px; border:1px solid rgba(71,85,105,0.4);'>"
+                f"<div style='font-size:12px; color:#94a3b8; letter-spacing:0.05em;'>{label}</div>"
+                f"<div style='font-size:13px; color:#cbd5e1; margin-top:8px;'>"
+                f"No target set for {mtd_start:%b %Y}.</div>"
+                "</div>"
+            )
+
+        days_so_far = days_into_month
+        days_in_mo  = days_in_cur_month
+        pct = (current / target * 100) if target > 0 else 0
+        fill_pct = min(pct, 100)
+        expected_so_far = target * (days_so_far / days_in_mo) if days_in_mo > 0 else 0
+        pace_delta = current - expected_so_far
+        projected_eom = (current / days_so_far * days_in_mo) if days_so_far > 0 else 0
+
+        # Status banding
+        if projected_eom >= target * 0.98:
+            status_label, status_color = "✅ ON TRACK", "#10b981"
+        elif projected_eom >= target * 0.85:
+            status_label, status_color = "⚠️ SLIGHTLY BEHIND", "#f59e0b"
+        else:
+            status_label, status_color = "🔴 BEHIND TARGET", "#ef4444"
+
+        bar_color = (
+            "#10b981" if pct >= 100 else
+            "#22c55e" if pace_delta >= 0 else
+            "#f59e0b" if projected_eom >= target * 0.85 else "#ef4444"
+        )
+
+        # Where the linear-pace marker sits (0–100% across the bar)
+        pace_marker_pct = min((days_so_far / days_in_mo * 100) if days_in_mo > 0 else 0, 100)
+
+        pace_color = "#22c55e" if pace_delta >= 0 else "#ef4444"
+        eom_sign   = "+" if projected_eom >= target else ""
+
+        return f"""
+        <div style='padding:14px 16px; background:rgba(30,41,59,0.5);
+                    border-radius:12px; border:1px solid rgba(71,85,105,0.4);'>
+            <div style='display:flex; justify-content:space-between;
+                        align-items:baseline; margin-bottom:8px;'>
+                <div style='font-size:12px; color:#94a3b8; letter-spacing:0.05em;'>
+                    {label}
+                </div>
+                <div style='font-size:11px; color:{status_color}; font-weight:600;'>
+                    {status_label}
+                </div>
+            </div>
+            <div style='display:flex; justify-content:space-between;
+                        align-items:baseline; margin-bottom:6px;'>
+                <div style='font-size:24px; font-weight:600; color:#e2e8f0;'>
+                    {current:,} <span style='font-size:14px; color:#64748b;'>/ {target:,}</span>
+                </div>
+                <div style='font-size:14px; color:#cbd5e1;'>
+                    <strong>{pct:.0f}%</strong> of target
+                </div>
+            </div>
+            <div style='position:relative; height:14px; background:rgba(15,23,42,0.6);
+                        border-radius:7px; overflow:hidden;'>
+                <div style='position:absolute; left:0; top:0; height:100%;
+                            width:{fill_pct:.1f}%; background:{bar_color};
+                            border-radius:7px;'></div>
+                <div style='position:absolute; left:{pace_marker_pct:.1f}%;
+                            top:-2px; height:18px; width:2px; background:#e2e8f0;
+                            opacity:0.5;' title='Linear pace marker'></div>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-top:8px;
+                        font-size:11px; color:#94a3b8;'>
+                <span>Pace:
+                    <strong style='color:{pace_color}'>
+                        {'+' if pace_delta >= 0 else ''}{pace_delta:.0f}
+                    </strong> vs linear ({expected_so_far:,.0f} expected by today)
+                </span>
+                <span>Projected EOM:
+                    <strong style='color:#cbd5e1'>{projected_eom:,.0f}</strong>
+                    ({eom_sign}{(projected_eom - target):,.0f} vs target)
+                </span>
+            </div>
+        </div>
+        """
+
+    gcc_col, usa_col = st.columns(2)
+    with gcc_col:
+        st.markdown(
+            _render_target_bar("GCC TARGET · UAE + KSA", gcc_mtd, gcc_target),
+            unsafe_allow_html=True,
+        )
+    with usa_col:
+        st.markdown(
+            _render_target_bar("USA TARGET", usa_mtd, usa_target),
+            unsafe_allow_html=True,
+        )
+
 # ── Row E: Last-7-day chart + KPI table (GCC × USA) ──────────────────────────
 st.markdown("---")
 st.markdown("### Trailing 7-Day Snapshot")
