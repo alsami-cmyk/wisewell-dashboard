@@ -368,18 +368,40 @@ team_prev   = sum(s["prev_cnt"] for s in agent_stats.values())
 team_target = monthly_target
 team_pct    = team_total / team_target * 100 if team_target > 0 else 0
 
-# ── Inbound queries for selected month ────────────────────────────────────────
+# ── Inbound queries for selected month + previous month ───────────────────────
 if not df_inbound.empty:
     month_inbound = df_inbound[
         (df_inbound["date"].dt.year  == sel_year) &
         (df_inbound["date"].dt.month == sel_month)
     ].copy()
     month_inbound_total = int(month_inbound["total"].sum())
+
+    prev_inbound_df    = df_inbound[
+        (df_inbound["date"] >= prev_m_start) &
+        (df_inbound["date"] <= prev_cutoff)
+    ]
+    prev_inbound_total = int(prev_inbound_df["total"].sum())
 else:
     month_inbound       = pd.DataFrame()
     month_inbound_total = 0
+    prev_inbound_total  = 0
 
-conv_rate = (team_total / month_inbound_total * 100) if month_inbound_total > 0 else None
+conv_rate      = (team_total / month_inbound_total * 100) if month_inbound_total > 0 else None
+prev_conv_rate = (team_prev  / prev_inbound_total  * 100) if prev_inbound_total  > 0 else None
+
+# Delta strings
+def _pct_delta(current, previous):
+    """Return a '+X.X% vs last month' string, or None if not computable."""
+    if previous and previous > 0:
+        return f"{(current - previous) / previous * 100:+.1f}% vs last month"
+    return None
+
+inbound_delta  = _pct_delta(month_inbound_total, prev_inbound_total)
+conv_rate_delta = (
+    f"{conv_rate - prev_conv_rate:+.1f}pp vs last month"
+    if conv_rate is not None and prev_conv_rate is not None
+    else None
+)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -413,15 +435,18 @@ st.markdown("---")
 # ══════════════════════════════════════════════════════════════════════════════
 # TEAM KPIs
 # ══════════════════════════════════════════════════════════════════════════════
-k1, k2, k3, k4, k5 = st.columns(5)
+k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("Team Sales (MTD)",   f"{team_total:,}",
           delta=f"{team_total - team_prev:+,} vs same point last month")
-k2.metric("Conversion Rate",
+k2.metric("Inbound Queries",    f"{month_inbound_total:,}",
+          delta=inbound_delta)
+k3.metric("Conversion Rate",
           f"{conv_rate:.1f}%" if conv_rate is not None else "—",
+          delta=conv_rate_delta,
           help="Team sales ÷ total inbound queries for the month")
-k3.metric("Team Target",        f"{team_target:,}")
-k4.metric("% to Target",        f"{team_pct:.1f}%")
-k5.metric("Days Remaining",     f"{days_left} of {days_in_month}")
+k4.metric("Team Target",        f"{team_target:,}")
+k5.metric("% to Target",        f"{team_pct:.1f}%")
+k6.metric("Days Remaining",     f"{days_left} of {days_in_month}")
 
 st.markdown(
     f"""<div style="margin:10px 0 4px;">
