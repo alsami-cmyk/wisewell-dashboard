@@ -102,6 +102,24 @@ def load_sales_data() -> pd.DataFrame:
     creds = _get_credentials()
     svc   = build("sheets", "v4", credentials=creds, cache_discovery=False)
 
+    def _find_col(keywords, columns):
+        """Find first column whose stripped-lowercase name contains any keyword."""
+        for kw in keywords:
+            c = next((c for c in columns if kw in c.lower().strip()), None)
+            if c:
+                return c
+        return None
+
+    def _parse_dates(raw: pd.Series) -> pd.Series:
+        parsed = pd.to_datetime(raw, format="%d-%b-%Y", errors="coerce")
+        mask = parsed.isna() & raw.ne("") & raw.ne("nan")
+        if mask.any():
+            parsed[mask] = pd.to_datetime(raw[mask], format="%d %B %Y", errors="coerce")
+        still = parsed.isna() & raw.ne("") & raw.ne("nan")
+        if still.any():
+            parsed[still] = pd.to_datetime(raw[still], errors="coerce")
+        return parsed.dt.normalize()
+
     frames = []
     for agent in AGENTS:
         try:
@@ -117,48 +135,37 @@ def load_sales_data() -> pd.DataFrame:
 
         if len(rows) < 2:
             continue
+
         max_cols = max(len(r) for r in rows)
         padded   = [r + [""] * (max_cols - len(r)) for r in rows]
-        df       = pd.DataFrame(padded[1:], columns=[c.strip() for c in padded[0]])
-        frames.append(df)
+        # Strip every header cell to avoid whitespace mismatches between tabs
+        headers  = [c.strip() for c in padded[0]]
+        tab_df   = pd.DataFrame(padded[1:], columns=headers)
+
+        # Resolve columns within THIS tab's headers
+        cols      = tab_df.columns.tolist()
+        date_col  = _find_col(["date"], cols)
+        order_col = _find_col(["order number", "order num"], cols)
+        ag_col    = _find_col(["sales agent"], cols)
+        prod_col  = _find_col(["product"], cols)
+        type_col  = _find_col(["order type"], cols)
+
+        if not date_col:
+            continue
+
+        raw = tab_df[date_col].astype(str).str.strip()
+        tab_df["date"]       = _parse_dates(raw)
+        tab_df["agent"]      = tab_df[ag_col].astype(str).str.strip()      if ag_col    else agent
+        tab_df["product"]    = tab_df[prod_col].astype(str).str.strip()    if prod_col  else ""
+        tab_df["order_type"] = tab_df[type_col].astype(str).str.strip()    if type_col  else ""
+        tab_df["order_num"]  = tab_df[order_col].astype(str).str.strip()   if order_col else ""
+
+        frames.append(tab_df[["date", "agent", "product", "order_type", "order_num"]])
 
     if not frames:
         return pd.DataFrame()
 
     df = pd.concat(frames, ignore_index=True)
-
-    # ── Dates ─────────────────────────────────────────────────────────────────
-    date_col = next((c for c in df.columns if c.lower() == "date"), None)
-    if not date_col:
-        return pd.DataFrame()
-
-    raw    = df[date_col].astype(str).str.strip()
-    parsed = pd.to_datetime(raw, format="%d-%b-%Y", errors="coerce")
-    mask   = parsed.isna() & raw.ne("") & raw.ne("nan")
-    if mask.any():
-        parsed[mask] = pd.to_datetime(raw[mask], format="%d %B %Y", errors="coerce")
-    still  = parsed.isna() & raw.ne("") & raw.ne("nan")
-    if still.any():
-        parsed[still] = pd.to_datetime(raw[still], errors="coerce")
-    df["date"] = parsed.dt.normalize()
-
-    # ── Columns ───────────────────────────────────────────────────────────────
-    def _find(keywords):
-        for kw in keywords:
-            c = next((c for c in df.columns if kw in c.lower()), None)
-            if c:
-                return c
-        return None
-
-    order_col   = _find(["order number", "order num"])
-    agent_col   = _find(["sales agent"])
-    product_col = _find(["product"])
-    type_col    = _find(["order type"])
-
-    df["agent"]      = df[agent_col].astype(str).str.strip()   if agent_col   else ""
-    df["product"]    = df[product_col].astype(str).str.strip() if product_col else ""
-    df["order_type"] = df[type_col].astype(str).str.strip()    if type_col    else ""
-    df["order_num"]  = df[order_col].astype(str).str.strip()   if order_col   else ""
 
     valid = (
         df["date"].notna() &
@@ -166,7 +173,7 @@ def load_sales_data() -> pd.DataFrame:
         df["order_num"].ne("") &
         df["order_num"].ne("nan")
     )
-    return df.loc[valid, ["date", "agent", "product", "order_type", "order_num"]].reset_index(drop=True)
+    return df.loc[valid].reset_index(drop=True)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -241,13 +248,16 @@ except Exception:
 
 # ── Available months (for sidebar filter) ─────────────────────────────────────
 today = pd.Timestamp.today().normalize()
-_periods = sorted(df_all["date"].dropna().dt.to_period("M").unique())
-_month_labels = [p.strftime("%B %Y") for p in _periods]
-# Ensure current month appears even if no data yet
 _cur_period = today.to_period("M")
-if _cur_period not in _periods:
+# Only show months up to (and including) the current month — no future months
+_periods = sorted(
+    p for p in df_all["date"].dropna().dt.to_period("M").unique()
+    if p <= _cur_period
+)
+# Ensure current month is always present
+if not _periods or _periods[-1] != _cur_period:
     _periods.append(_cur_period)
-    _month_labels.append(_cur_period.strftime("%B %Y"))
+_month_labels      = [p.strftime("%B %Y") for p in _periods]
 _default_month_idx = len(_month_labels) - 1
 
 
