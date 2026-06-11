@@ -664,6 +664,42 @@ if not month_inbound.empty and month_inbound_total > 0:
     )
     st.plotly_chart(fig_cr, use_container_width=True)
 
+# ── Inbound Queries Per Day ───────────────────────────────────────────────────
+if not month_inbound.empty and month_inbound_total > 0:
+    st.markdown(
+        '<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;'
+        f'letter-spacing:1.2px;color:#94a3b8;margin-bottom:4px;">'
+        f'Inbound Queries Per Day — {selected_month_label}</p>',
+        unsafe_allow_html=True,
+    )
+
+    # Only show days that actually have data (total > 0)
+    ib_plot = month_inbound.sort_values("date").copy()
+    ib_plot["label"] = ib_plot["date"].dt.strftime("%-d %b")
+
+    fig_ib = go.Figure(go.Bar(
+        x=ib_plot["label"].tolist(),
+        y=ib_plot["total"].tolist(),
+        marker_color="#00d4a0",
+        marker_line=dict(width=0),
+        opacity=0.85,
+        text=ib_plot["total"].tolist(),
+        textposition="outside",
+        textfont=dict(size=9, color="#64748b"),
+        hovertemplate="<b>%{x}</b> · %{y} queries<extra></extra>",
+    ))
+    fig_ib.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        height=240,
+        showlegend=False,
+        xaxis=dict(tickfont=dict(size=9, color="#94a3b8"), showgrid=False,
+                   zeroline=False, tickangle=-45),
+        yaxis=dict(tickfont=dict(size=9, color="#94a3b8"), showgrid=True,
+                   gridcolor="rgba(0,0,0,0.05)", zeroline=False),
+        margin=dict(t=28, b=8, l=4, r=8),
+    )
+    st.plotly_chart(fig_ib, use_container_width=True)
+
 st.markdown("---")
 
 
