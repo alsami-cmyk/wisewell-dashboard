@@ -199,15 +199,14 @@ def load_inbound_data() -> pd.DataFrame:
     padded   = [r + [""] * (max_cols - len(r)) for r in rows]
     df       = pd.DataFrame(padded[1:], columns=[c.strip() for c in padded[0]])
 
-    # Find date and total columns
-    date_col  = next((c for c in df.columns if c.strip() == ""), df.columns[0])  # first col is blank-header date
-    # Use positional: col 0 = date, col -1 = Total
+    # Rename blank first-column header to "date_raw"
     df.columns = [c if c.strip() else ("date_raw" if i == 0 else f"col_{i}")
                   for i, c in enumerate(df.columns)]
-    total_col = next((c for c in df.columns if "total" in c.lower()), None)
-    if not total_col:
-        # last column
-        total_col = df.columns[-1]
+
+    # Use "Chats - Product Information" only (not Total, which also includes tickets)
+    chats_col = next((c for c in df.columns if "chat" in c.lower()), None)
+    if not chats_col:
+        chats_col = df.columns[1]  # positional fallback: second column
 
     raw    = df["date_raw"].astype(str).str.strip()
     parsed = pd.to_datetime(raw, format="%d %b, %Y", errors="coerce")
@@ -216,7 +215,7 @@ def load_inbound_data() -> pd.DataFrame:
         parsed[still] = pd.to_datetime(raw[still], errors="coerce")
     df["date"] = parsed.dt.normalize()
 
-    df["total"] = pd.to_numeric(df[total_col].astype(str).str.replace(",", ""), errors="coerce").fillna(0).astype(int)
+    df["total"] = pd.to_numeric(df[chats_col].astype(str).str.replace(",", ""), errors="coerce").fillna(0).astype(int)
 
     valid = df["date"].notna() & (df["total"] > 0)
     return df.loc[valid, ["date", "total"]].reset_index(drop=True)
