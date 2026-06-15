@@ -1,9 +1,9 @@
 {
-  "date": "2026-06-14",
-  "machine_customers": 793,
-  "filter_customers": 107,
-  "machine_debt": 612619,
-  "filter_debt": 97226,
-  "escalate_machine": 317,
-  "escalate_filter": 104
+  "date": "2026-06-15",
+  "machine_customers": 803,
+  "filter_customers": 106,
+  "machine_debt": 619372,
+  "filter_debt": 97288,
+  "escalate_machine": 319,
+  "escalate_filter": 103
 }
