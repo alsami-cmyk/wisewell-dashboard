@@ -143,6 +143,10 @@ CANCELLATION_REASON_MAP: dict[str, str] = {
     "financial":              "Financial",
     "installation issues":    "Installation Issues",
     "machine fit":            "Machine Fit",
+    # Non-true cancellations (excluded from churn — see is_true_cancel
+    # logic in load_recharge_full):
+    "customer defaulted":     "Customer Defaulted",
+    "customer unreachable":   "Customer Unreachable",
 }
 
 # Historical row maps (0-indexed Python list positions in the raw values list)
@@ -779,6 +783,22 @@ def load_us_verified_subscriptions() -> pd.DataFrame:
         return _empty_us_verified()
     combined = pd.concat(pieces, ignore_index=True)
 
+    # ── Drop internal / test subscriptions entirely ───────────────────────
+    # Test subs (e.g. sheraz.temp@wisewell.com trial runs, jose@wisewell.com
+    # checkout tests) must not appear anywhere: not in gross sales, not in
+    # the user base, not in churn. Real customers who cancelled are NOT
+    # touched by this filter — they still count as a gross sale on their
+    # created_at and as a churn event on their cancelled_at.
+    email_lc = combined["customer_email"].fillna("").astype(str).str.strip().str.lower()
+    is_test = email_lc.str.endswith("@wisewell.com")
+    if is_test.any():
+        logger.info(
+            "load_us_verified_subscriptions: dropped %d internal/test rows (%s)",
+            int(is_test.sum()),
+            ", ".join(sorted(email_lc[is_test].unique())[:5]),
+        )
+        combined = combined[~is_test].reset_index(drop=True)
+
     logger.info(
         "load_us_verified_subscriptions: total %d rows  (Apr=%d, May=%d, Jun+=%d)",
         len(combined), len(apr), len(may), len(jun_onwards),
@@ -868,17 +888,27 @@ def load_recharge_full() -> pd.DataFrame:
     df["cancelled_at_dt"] = _parse_dates(df[can_col]) if can_col else pd.NaT
 
     # True cancellation:
-    #   cancelled_at is set  AND  reason NOT in swap/convert group
+    #   cancelled_at is set  AND  reason NOT in the excluded group.
+    # Excluded reasons (is_true_cancel = False — never counted as churn):
+    #   • swaps / conversions / upgrades ("swapped", "purchased",
+    #     "converted", "swap", "max") — the customer stayed, just on a
+    #     different product or plan.
+    #   • "Customer Defaulted" — multiple failed payments, unreachable or
+    #     uncooperative. A write-off, not a decision to leave.
+    #   • "Customer Unreachable" — ordered but never responded to delivery
+    #     coordination. The subscription never really began.
+    # All of these still count as gross sales on their created_at.
     has_cancelled = df["cancelled_at_dt"].notna()
     reason_col = next(
         (c for c in df.columns if "cancellation" in c.lower() and "reason" in c.lower()
          and "comment" not in c.lower()), None
     )
     raw_reason = df[reason_col].astype(str).str.strip() if reason_col else pd.Series("", index=df.index)
-    is_swap = raw_reason.str.lower().str.contains(
-        r"swapped|purchased|converted|swap|max", regex=True, na=False
+    is_excluded_reason = raw_reason.str.lower().str.contains(
+        r"swapped|purchased|converted|swap|max|defaulted|unreachable",
+        regex=True, na=False,
     )
-    df["is_true_cancel"] = has_cancelled & ~is_swap
+    df["is_true_cancel"] = has_cancelled & ~is_excluded_reason
 
     # Normalise cancellation reason for display
     if reason_col:
