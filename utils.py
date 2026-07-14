@@ -890,12 +890,13 @@ def load_recharge_full() -> pd.DataFrame:
     # True cancellation:
     #   cancelled_at is set  AND  reason NOT in the excluded group.
     # Excluded reasons (is_true_cancel = False — never counted as churn):
-    #   • swaps / conversions / upgrades ("swapped", "purchased",
-    #     "converted", "swap", "max") — the customer stayed, just on a
-    #     different product or plan.
-    #   • "Customer Defaulted" — multiple failed payments, unreachable or
+    #   • ALL markets — swaps / conversions / upgrades ("swapped",
+    #     "purchased", "converted", "swap", "max"): the customer stayed,
+    #     just on a different product or plan.
+    #   • UAE ONLY (per CS process, 2026-07) —
+    #     "Customer Defaulted": multiple failed payments, unreachable or
     #     uncooperative. A write-off, not a decision to leave.
-    #   • "Customer Unreachable" — ordered but never responded to delivery
+    #     "Customer Unreachable": ordered but never responded to delivery
     #     coordination. The subscription never really began.
     # All of these still count as gross sales on their created_at.
     has_cancelled = df["cancelled_at_dt"].notna()
@@ -904,11 +905,14 @@ def load_recharge_full() -> pd.DataFrame:
          and "comment" not in c.lower()), None
     )
     raw_reason = df[reason_col].astype(str).str.strip() if reason_col else pd.Series("", index=df.index)
-    is_excluded_reason = raw_reason.str.lower().str.contains(
-        r"swapped|purchased|converted|swap|max|defaulted|unreachable",
-        regex=True, na=False,
+    reason_lc  = raw_reason.str.lower()
+    is_swap = reason_lc.str.contains(
+        r"swapped|purchased|converted|swap|max", regex=True, na=False
     )
-    df["is_true_cancel"] = has_cancelled & ~is_excluded_reason
+    is_uae_writeoff = (df["market"] == "UAE") & reason_lc.str.contains(
+        r"defaulted|unreachable", regex=True, na=False
+    )
+    df["is_true_cancel"] = has_cancelled & ~(is_swap | is_uae_writeoff)
 
     # Normalise cancellation reason for display
     if reason_col:
