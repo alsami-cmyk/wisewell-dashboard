@@ -65,6 +65,8 @@ RAW_TABS = [
     # USA replacement sources (see "USA sales: multi-source override" below)
     "US Verified - May 2026",
     "Stripe - USA",
+    # Justlife marketplace subscriptions — counted as UAE (see load_recharge_full)
+    "Justlife - UAE",
 ]
 # Historical (hardcoded) tabs — pre-Sep-2025 final truth
 HIST_TABS = ["Monthly Sales", "Monthly Cancellations", "Monthly User Base"]
@@ -117,6 +119,17 @@ US_STRIPE_TAB            = "Stripe - USA"            # in main sheet
 US_PRICE_MAP = {
     "Wisewell Model 1": 69.0,
     "Wisewell Nano":    49.0,
+}
+
+# Justlife (UAE marketplace) feed carries no price. Fill from the standard
+# UAE monthly list price per product (AED), derived from Recharge - UAE
+# medians. Keyed by the canonical product name from _classify_recharge_product.
+JUSTLIFE_UAE_PRICE = {
+    "Model 1":   150.0,
+    "Nano+":      99.0,
+    "Bubble":    199.0,
+    "Flat":      139.0,
+    "Nano Tank":  99.0,
 }
 
 # Shopify ownership unit columns: (product_name, column_header)
@@ -837,6 +850,45 @@ def load_recharge_full() -> pd.DataFrame:
         df["currency"] = currency
         frames.append(df)
 
+    # ── Justlife - UAE ────────────────────────────────────────────────────
+    # Marketplace subscriptions sold through Justlife; counted as UAE sales
+    # and churn. Feed has its own compact schema (ref_ID, status,
+    # product_title, variant_title, created_at, cancelled_at,
+    # cancellation_reason) and no price — we map it into the Recharge raw
+    # schema so it flows through the same classification / date / churn /
+    # ARR pipeline below. Price filled from JUSTLIFE_UAE_PRICE.
+    jl = _rows_to_df(raw_data.get("Justlife - UAE", []))
+    if not jl.empty:
+        jl.columns = [c.strip() for c in jl.columns]
+        _jcmap = {c.lower(): c for c in jl.columns}
+
+        def _jl_col(name: str) -> pd.Series:
+            col = _jcmap.get(name.lower())
+            if col:
+                return jl[col].astype(str).str.strip()
+            return pd.Series([""] * len(jl), index=jl.index)
+
+        j = pd.DataFrame(index=jl.index)
+        j["subscription_id"]    = "justlife_" + _jl_col("ref_ID")
+        j["customer_email"]     = ""  # feed carries customer_name only, no email
+        j["status"]             = _jl_col("status").str.upper()
+        j["product_title"]      = _jl_col("product_title")
+        j["variant_title"]      = _jl_col("variant_title")
+        j["sku"]                = ""
+        _pc = j["product_title"].map(_classify_recharge_product)
+        j["recurring_price"]    = _pc.map(
+            lambda x: JUSTLIFE_UAE_PRICE.get(x[1], 0.0) if x else 0.0
+        )
+        j["quantity"]                   = 1
+        j["charge_interval_frequency"]  = 1
+        j["created_at"]         = _jl_col("created_at")
+        j["cancelled_at"]       = _jl_col("cancelled_at")
+        j["cancellation_reason"] = _jl_col("cancellation_reason")
+        j["market"]             = "UAE"
+        j["currency"]           = "AED"
+        frames.append(j)
+        logger.info("load_recharge_full: +%d Justlife-UAE rows", len(j))
+
     if not frames:
         return pd.DataFrame()
 
@@ -894,11 +946,12 @@ def load_recharge_full() -> pd.DataFrame:
     #     "purchased", "converted", "swap", "max"): the customer stayed,
     #     just on a different product or plan.
     #   • UAE ONLY (per CS process, 2026-07) —
-    #     "Customer Defaulted": multiple failed payments, unreachable or
-    #     uncooperative. A write-off, not a decision to leave.
     #     "Customer Unreachable": ordered but never responded to delivery
     #     coordination. The subscription never really began.
-    # All of these still count as gross sales on their created_at.
+    #     ("Customer Defaulted" was briefly excluded too, but as of 2026-07
+    #     it counts as a TRUE cancellation — a customer who stops paying is
+    #     real churn.)
+    # All excluded reasons still count as gross sales on their created_at.
     has_cancelled = df["cancelled_at_dt"].notna()
     reason_col = next(
         (c for c in df.columns if "cancellation" in c.lower() and "reason" in c.lower()
@@ -910,7 +963,7 @@ def load_recharge_full() -> pd.DataFrame:
         r"swapped|purchased|converted|swap|max", regex=True, na=False
     )
     is_uae_writeoff = (df["market"] == "UAE") & reason_lc.str.contains(
-        r"defaulted|unreachable", regex=True, na=False
+        r"unreachable", regex=True, na=False
     )
     df["is_true_cancel"] = has_cancelled & ~(is_swap | is_uae_writeoff)
 
