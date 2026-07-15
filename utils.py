@@ -2360,15 +2360,21 @@ def get_all_machine_sales(
     Optionally filtered by [start_dt, end_dt] (inclusive).
 
     Returns: date, market, product, is_ownership (bool), is_offline (bool),
-             qty (int)
+             is_partner (bool), qty (int)
 
     `is_offline` distinguishes online (Recharge / Shopify) from offline
-    (Offline - Subscriptions / Offline - Ownership) sources. Useful for
-    excluding B2B / direct offline deals from CAC denominators since
-    those aren't acquired through paid ads.
+    (Offline - Subscriptions / Offline - Ownership) sources.
+
+    `is_partner` flags orders from a partner marketplace (Justlife) that
+    are NOT acquired through the paid-ads engine.
+
+    Both is_offline and is_partner are excluded from CAC denominators
+    since neither is a paid-ad acquisition. They still count as gross
+    sales / user base / churn.
 
     Sources:
       Subscriptions: Recharge created_at_dt × quantity (Machine category)  → online
+                     (Justlife-prefixed subs → is_partner)
                    + Offline - Subscriptions                                → offline
       Ownership:    Shopify ownership unit columns × literal value         → online
                    + Offline - Ownership                                    → offline
@@ -2386,31 +2392,33 @@ def get_all_machine_sales(
         (rc["created_at_dt"] <= _ed)
     ]
     for _, row in rc_machine.iterrows():
+        is_partner = str(row.get("subscription_id", "")).startswith("justlife_")
         records.append((
             row["created_at_dt"].normalize(),
             row["market"],
             row["product"],
-            False,  # is_ownership
-            False,  # is_offline
+            False,       # is_ownership
+            False,       # is_offline
+            is_partner,  # is_partner (Justlife marketplace)
             int(row["quantity"]),
         ))
 
     # ── Offline subscriptions ────────────────────────────────────────────────
     off_sub = load_offline_subscriptions()
     for _, row in off_sub[(off_sub["date"] >= _sd) & (off_sub["date"] <= _ed)].iterrows():
-        records.append((row["date"], row["market"], row["product"], False, True, int(row["qty"])))
+        records.append((row["date"], row["market"], row["product"], False, True, False, int(row["qty"])))
 
     # ── Shopify ownership (online) ───────────────────────────────────────────
     shop_own = load_shopify_ownership()
     for _, row in shop_own[(shop_own["date"] >= _sd) & (shop_own["date"] <= _ed)].iterrows():
-        records.append((row["date"], row["market"], row["product"], True, False, int(row["qty"])))
+        records.append((row["date"], row["market"], row["product"], True, False, False, int(row["qty"])))
 
     # ── Offline ownership ────────────────────────────────────────────────────
     off_own = load_offline_ownership()
     for _, row in off_own[(off_own["date"] >= _sd) & (off_own["date"] <= _ed)].iterrows():
-        records.append((row["date"], row["market"], row["product"], True, True, int(row["qty"])))
+        records.append((row["date"], row["market"], row["product"], True, True, False, int(row["qty"])))
 
-    cols = ["date", "market", "product", "is_ownership", "is_offline", "qty"]
+    cols = ["date", "market", "product", "is_ownership", "is_offline", "is_partner", "qty"]
     if not records:
         return pd.DataFrame(columns=cols)
     return pd.DataFrame(records, columns=cols)

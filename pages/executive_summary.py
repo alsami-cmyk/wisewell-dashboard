@@ -109,18 +109,18 @@ def _new_sales_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> int:
 
 def _paid_sales_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> int:
     """
-    Paid-attributable new sales in [start, end] — EXCLUDES offline.
+    Paid-attributable new sales in [start, end] — EXCLUDES offline AND
+    partner-marketplace (Justlife) orders.
 
     Used as the CAC denominator. Offline subscriptions/ownership are
-    typically larger B2B deals not acquired through the paid-ads
-    engine, so they would otherwise inflate the denominator and
-    artificially deflate CAC. (Example: a 58-unit offline B2B deal
-    in May 2026.)
+    typically larger B2B deals, and partner orders (Justlife) come from
+    a marketplace — neither is acquired through the paid-ads engine, so
+    both would otherwise inflate the denominator and deflate CAC.
     """
     s = _apply_mkt(get_all_machine_sales(start_dt=start_ts, end_dt=end_ts))
     if s is None or s.empty:
         return 0
-    s = s[~s["is_offline"]]
+    s = s[~s["is_offline"] & ~s["is_partner"]]
     return int(s["qty"].sum()) if not s.empty else 0
 
 
@@ -148,10 +148,12 @@ def _new_sales_markets(start_ts: pd.Timestamp, end_ts: pd.Timestamp,
 
 def _paid_sales_markets(start_ts: pd.Timestamp, end_ts: pd.Timestamp,
                         markets: list[str]) -> int:
+    # CAC denominator: exclude offline (B2B/direct) AND partner (Justlife)
+    # orders — neither is a paid-ad acquisition.
     s = _filter_markets(get_all_machine_sales(start_dt=start_ts, end_dt=end_ts), markets)
     if s.empty:
         return 0
-    s = s[~s["is_offline"]]
+    s = s[~s["is_offline"] & ~s["is_partner"]]
     return int(s["qty"].sum()) if not s.empty else 0
 
 
