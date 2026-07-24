@@ -37,21 +37,19 @@ from utils import (
 
 st.markdown("## 🎯 Executive summary")
 
-# ── Global country filter ─────────────────────────────────────────────────────
-country_sel = st.selectbox(
-    "Country",
-    ["All", "UAE", "KSA", "USA"],
-    index=0,
-    key="xs_country",
-)
-mkt_filter = None if country_sel == "All" else country_sel
+# NOTE: the global country filter for the LOWER section (Growth / Efficiency /
+# Sales-over-time / Sales-by-product) is defined further down, just above the
+# "Growth: ARR and Monthly Sales" header — i.e. next to the charts it controls.
+# `mkt_filter` is read by _apply_mkt at call time, and every _apply_mkt call
+# lives in that lower section (after the widget), so this ordering is safe.
 
 
 def _apply_mkt(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
-    if mkt_filter and "market" in df.columns:
-        return df[df["market"] == mkt_filter]
+    _mf = globals().get("mkt_filter")
+    if _mf and "market" in df.columns:
+        return df[df["market"] == _mf]
     return df
 
 
@@ -613,74 +611,48 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def _filtered_metric_card(
-    title: str,
-    formatter,
-    value_fn,
-    *,
-    key_prefix: str,
-    help_text: str,
-) -> None:
-    """Render a metric card with two compact filters tucked under the title."""
-    # Title row
-    st.markdown(
-        f"<div style='font-size:0.78rem; color:#64748b; text-transform:uppercase; "
-        f"letter-spacing:.05em; margin-bottom:6px;'>{title}</div>",
-        unsafe_allow_html=True,
-    )
+# ── Row A: ONE shared Country/Product filter drives BOTH User Base + ARR ────
+st.markdown(
+    "<div style='font-size:0.62rem; color:#64748b; letter-spacing:.06em; "
+    "text-transform:uppercase; margin-bottom:2px;'>User base &amp; ARR — filters</div>",
+    unsafe_allow_html=True,
+)
+st.markdown("<div class='row-a-filters'>", unsafe_allow_html=True)
+_fc_country, _fc_product, _fc_spacer = st.columns([1.4, 1.4, 5.2])
+ua_country = _fc_country.selectbox(
+    "Country", COUNTRY_OPTS, key="uaarr_country", label_visibility="collapsed",
+)
+ua_product = _fc_product.selectbox(
+    "Product", PRODUCT_OPTS, key="uaarr_product", label_visibility="collapsed",
+)
+st.markdown("</div>", unsafe_allow_html=True)
 
-    # Tiny filter row (wrapped in .row-a-filters → triggers the compact CSS)
-    st.markdown("<div class='row-a-filters'>", unsafe_allow_html=True)
-    label_col, c_col, p_col, _spacer = st.columns([1.0, 1.2, 1.2, 0.6])
-    label_col.markdown(
-        "<div style='font-size:0.62rem; color:#64748b; letter-spacing:.04em; "
-        "padding-top:5px; text-align:right;'>FILTERS</div>",
-        unsafe_allow_html=True,
-    )
-    country = c_col.selectbox(
-        "Country", COUNTRY_OPTS, key=f"{key_prefix}_country",
-        label_visibility="collapsed",
-    )
-    product = p_col.selectbox(
-        "Product", PRODUCT_OPTS, key=f"{key_prefix}_product",
-        label_visibility="collapsed",
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    mkts = ALL_MARKETS if country == "All" else [country]
-    prod = None if product == "All" else product
-    cur  = value_fn(today_ts, mkts, prod)
-    prev = value_fn(prev_end, mkts, prod)
-
-    st.metric(
-        label=title,
-        value=formatter(cur),
-        delta=_fmt_delta(_delta_pct(cur, prev)),
-        help=f"{help_text}  ·  Country={country}  ·  Product={product}",
-        label_visibility="collapsed",
-    )
-
+_ua_mkts  = ALL_MARKETS if ua_country == "All" else [ua_country]
+_ua_prod  = None if ua_product == "All" else ua_product
+_ua_scope = f"Country={ua_country} · Product={ua_product}"
 
 rA1, rA2, rA3 = st.columns([4, 4, 3])
 
 with rA1:
-    _filtered_metric_card(
+    _ub_cur  = _user_base_filtered(today_ts, _ua_mkts, _ua_prod)
+    _ub_prev = _user_base_filtered(prev_end, _ua_mkts, _ua_prod)
+    st.metric(
         "TOTAL USER BASE",
-        formatter=lambda v: f"{v:,}",
-        value_fn=_user_base_filtered,
-        key_prefix="ub",
-        help_text=f"Active machine subscribers + active ownership. "
-                  f"Delta vs same MTD-day of prior month ({prev_end:%d %b %Y}).",
+        f"{_ub_cur:,}",
+        delta=_fmt_delta(_delta_pct(_ub_cur, _ub_prev)),
+        help=f"Active machine subscribers + active ownership. Delta vs same "
+             f"MTD-day of prior month ({prev_end:%d %b %Y}).  ·  {_ua_scope}",
     )
 
 with rA2:
-    _filtered_metric_card(
+    _arr_cur  = _arr_filtered(today_ts, _ua_mkts, _ua_prod)
+    _arr_prev = _arr_filtered(prev_end, _ua_mkts, _ua_prod)
+    st.metric(
         "TOTAL ARR (USD)",
-        formatter=fmt_usd,
-        value_fn=_arr_filtered,
-        key_prefix="arr",
-        help_text=f"Annualised run-rate from active Machine + Filter subs. "
-                  f"Delta vs same MTD-day of prior month ({prev_end:%d %b %Y}).",
+        fmt_usd(_arr_cur),
+        delta=_fmt_delta(_delta_pct(_arr_cur, _arr_prev)),
+        help=f"Annualised run-rate from active Machine + Filter subs. Delta vs "
+             f"same MTD-day of prior month ({prev_end:%d %b %Y}).  ·  {_ua_scope}",
     )
 
 with rA3:
@@ -1030,8 +1002,21 @@ with eR:
     )
     st.dataframe(kpi_df, hide_index=True, use_container_width=True, height=210)
 
-# ── Growth: ARR + Monthly Sales over time ─────────────────────────────────────
+# ── Lower-section country filter ──────────────────────────────────────────────
+# Moved here from the top of the page: it only affects the sections BELOW
+# (Growth, Efficiency, Sales-over-time, Sales-by-product), so it lives next to
+# them. Read by _apply_mkt (defined near the top) at call time.
 st.markdown("---")
+_cf_col, _cf_spacer = st.columns([1.4, 6.6])
+country_sel = _cf_col.selectbox(
+    "Country (charts below)",
+    ["All", "UAE", "KSA", "USA"],
+    index=0,
+    key="xs_country",
+)
+mkt_filter = None if country_sel == "All" else country_sel
+
+# ── Growth: ARR + Monthly Sales over time ─────────────────────────────────────
 st.markdown("### Growth: ARR and Monthly Sales")
 
 # Month-range pickers. Default start = Jan 2025, end = current month.
