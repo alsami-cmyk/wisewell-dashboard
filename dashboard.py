@@ -223,6 +223,127 @@ with st.sidebar:
         st.rerun()
     st.caption("Auto-refreshes every 5 min")
 
+# ── Dark / light theme ────────────────────────────────────────────────────────
+# One central toggle. dashboard.py runs on every page load (the pages render
+# inside pg.run() below), so defining the button + theme CSS + the Plotly
+# recolour wrapper here covers ALL pages with no per-page edits.
+st.session_state.setdefault("ui_theme", "dark")
+_theme = st.session_state["ui_theme"]
+
+# Small toggle button, pinned to the top-right of the main area on every page.
+st.markdown(
+    "<style>"
+    ".theme-toggle-row [data-testid='stButton'] button {"
+    "  padding:0.15rem 0.55rem; min-height:0; border-radius:8px;"
+    "  font-size:1rem; line-height:1.1; }"
+    "</style>",
+    unsafe_allow_html=True,
+)
+st.markdown("<div class='theme-toggle-row'>", unsafe_allow_html=True)
+_tt_spacer, _tt_btn = st.columns([13, 1])
+with _tt_btn:
+    if st.button("🌙" if _theme == "dark" else "☀️",
+                 key="theme_toggle",
+                 help="Switch to light mode" if _theme == "dark" else "Switch to dark mode"):
+        st.session_state["ui_theme"] = "light" if _theme == "dark" else "dark"
+        st.rerun()
+st.markdown("</div>", unsafe_allow_html=True)
+
+# Light-mode chrome overrides (the base theme in config.toml is dark). The
+# sidebar deliberately stays dark in both modes — a dark rail beside a light
+# canvas is a common, intentional look and keeps the chat legible.
+if _theme == "light":
+    st.markdown("""
+    <style>
+    [data-testid="stAppViewContainer"],
+    [data-testid="stMain"],
+    [data-testid="stMain"] .block-container { background-color: #ffffff !important; }
+    [data-testid="stHeader"] { background: rgba(255,255,255,0.9) !important; }
+
+    /* Main-area text → dark ink (scoped so the dark sidebar is untouched) */
+    [data-testid="stMain"] h1, [data-testid="stMain"] h2, [data-testid="stMain"] h3,
+    [data-testid="stMain"] h4, [data-testid="stMain"] h5, [data-testid="stMain"] h6,
+    [data-testid="stMain"] p, [data-testid="stMain"] li, [data-testid="stMain"] span,
+    [data-testid="stMain"] label, [data-testid="stMain"] .stMarkdown,
+    [data-testid="stMain"] [data-testid="stMetricValue"] { color: #0f172a !important; }
+    [data-testid="stMain"] [data-testid="stCaptionContainer"],
+    [data-testid="stMain"] [data-testid="stCaptionContainer"] p { color: #475569 !important; }
+
+    /* Metric cards → light surface with a soft border */
+    [data-testid="stMain"] [data-testid="stMetric"],
+    [data-testid="stMain"] div[data-testid="metric-container"] {
+        background:#f8fafc !important; border:1px solid #e2e8f0 !important;
+        border-radius:12px; padding:1rem 1.25rem; }
+    [data-testid="stMain"] [data-testid="stMetricLabel"] { color:#64748b !important; }
+
+    /* Inputs / selectboxes / dataframes on the light canvas */
+    [data-testid="stMain"] [data-baseweb="select"] > div {
+        background:#ffffff !important; border-color:#cbd5e1 !important; }
+    [data-testid="stMain"] [data-baseweb="select"] * { color:#0f172a !important; }
+    [data-testid="stMain"] [data-testid="stDataFrame"] { background:#ffffff !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# ── Plotly recolour wrapper ─────────────────────────────────────────────────
+# Every chart hardcodes dark (near-white) text for the dark theme. In light
+# mode we swap page-background text (axis ticks/titles, legend, annotations)
+# to dark ink. Bar/marker text is left alone — it sits on coloured fills, not
+# on the page background. Monkeypatching st.plotly_chart means every page's
+# charts flow through this automatically.
+_LIGHT_TEXT = {
+    "#e2e8f0", "#cbd5e1", "#94a3b8", "#f1f5f9", "#e5e7eb", "#f8fafc",
+    "#cbd5f5", "#e2e5f0", "#ffffff", "white",
+}
+_DARK_INK = "#1e293b"
+
+
+def _is_light(color) -> bool:
+    return isinstance(color, str) and color.strip().lower() in _LIGHT_TEXT
+
+
+def _relight_fig(fig) -> None:
+    lay = getattr(fig, "layout", None)
+    if lay is None:
+        return
+    try:
+        if lay.font.color is None or _is_light(lay.font.color):
+            lay.font.color = _DARK_INK
+    except Exception:
+        pass
+    for ax_name in ("xaxis", "yaxis", "xaxis2", "yaxis2"):
+        ax = getattr(lay, ax_name, None)
+        if ax is None:
+            continue
+        for sub in ("title", "tickfont"):
+            try:
+                node = getattr(ax, sub)
+                fnt = node.font if sub == "title" else node
+                if fnt is not None and _is_light(fnt.color):
+                    fnt.color = _DARK_INK
+            except Exception:
+                pass
+    try:
+        for ann in (lay.annotations or ()):
+            if ann.font is not None and _is_light(ann.font.color):
+                ann.font.color = _DARK_INK
+    except Exception:
+        pass
+
+
+_orig_plotly_chart = st.plotly_chart
+
+
+def _themed_plotly_chart(fig, *a, **kw):
+    if st.session_state.get("ui_theme") == "light":
+        try:
+            _relight_fig(fig)
+        except Exception:
+            pass
+    return _orig_plotly_chart(fig, *a, **kw)
+
+
+st.plotly_chart = _themed_plotly_chart
+
 # ── Page router ───────────────────────────────────────────────────────────────
 pg = st.navigation([
     st.Page("pages/executive_summary.py", title="Executive Summary", icon="🎯"),
