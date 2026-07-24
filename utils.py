@@ -62,9 +62,8 @@ RAW_TABS = [
     "Sessions by Source - Daily",
     "Top Landing Pages - Daily",
     "Projections",
-    # USA replacement sources (see "USA sales: multi-source override" below)
-    "US Verified - May 2026",
-    "Stripe - USA",
+    # USA verified single source (see "USA sales: single verified source" below)
+    "US Verified",
     # Justlife marketplace subscriptions — counted as UAE (see load_recharge_full)
     "Justlife - UAE",
 ]
@@ -93,32 +92,20 @@ CATEGORY_COLOR = {"Machine": "#0ea5e9", "Filter": "#10b981"}
 MARKET_COLOR   = {"UAE": "#6366f1", "KSA": "#f59e0b", "USA": "#10b981"}
 FX_FALLBACK    = {"AED": 1 / 3.6725, "SAR": 1 / 3.75, "USD": 1.0}
 
-# ── USA sales: multi-source override ──────────────────────────────────────────
-# As of 2026-05-08 we determined that ~94% of raw USA Recharge orders are
-# fraudulent (scammers exploiting the first-month-free promotion). The raw
-# Recharge - USA tab is discarded on load and replaced with three vetted
-# sources, stitched together by date:
-#
-#   • April 2026 (Apr 23–30):  external CLEAN LIST sheet (manual review)
-#   • May 2026:                'US Verified - May 2026' tab (1:1 with Shopify
-#                              orders cross-referenced for product/SKU)
-#   • June 2+ 2026:            'Stripe - USA' tab (new Stripe-billed subs;
-#                              Recharge-style schema, auto-synced)
-#
-# All three sources are normalised into a Recharge-shaped DataFrame, then
-# concatenated. Each loader is independently resilient — a single source
-# failing doesn't take down the dashboard.
-US_VERIFIED_APR_SHEET_ID = "17UMgAdech2G0ff2Lzu8-xi3s1EjEkXrtxMjh4rLgARU"
-US_VERIFIED_APR_TAB      = "CLEAN LIST"      # external sheet (Apr only)
-US_VERIFIED_MAY_TAB      = "US Verified - May 2026"  # in main sheet
-US_STRIPE_TAB            = "Stripe - USA"            # in main sheet
+# ── USA sales: single verified source ─────────────────────────────────────────
+# Raw Recharge - USA is discarded on load (was ~94% fraudulent first-month-free
+# scammers). It is replaced by the manually-curated "US Verified" tab in the
+# main sheet — a flat Shopify-style order export (one row per line item). This
+# superseded the earlier three-source stitch (CLEAN LIST + US Verified - May
+# 2026 + Stripe - USA) as of 2026-07.
+US_VERIFIED_TAB = "US Verified"   # single source, in main sheet
 
-# USA subscription pricing (USD/month) — used by the April CLEAN-LIST loader
-# which doesn't store prices. May + Jun onwards carry recurring_price in
-# their respective sheets, so this map only matters for April.
+# USA subscription pricing (USD/month) — the US Verified tab has no price, so
+# ARR is derived from this map. Keyed by product_title after the "(colour)"
+# suffix is stripped from Lineitem name.
 US_PRICE_MAP = {
-    "Wisewell Model 1": 69.0,
-    "Wisewell Nano":    49.0,
+    "Wisewell Model 1": 70.0,
+    "Wisewell Nano":    40.0,
 }
 
 # Justlife (UAE marketplace) feed carries no price. Fill from the standard
@@ -505,318 +492,110 @@ def _classify_and_arr(out: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _load_apr_clean_list() -> pd.DataFrame:
-    """
-    April 2026 verified USA orders — external CLEAN LIST sheet.
-
-    Uses a different schema than Recharge (Subscription ID, Customer email,
-    Product Model, Order Date, Status='Validated'/'Vaildated'), so it needs
-    custom parsing. Filtered to April rows only since May+ now come from
-    other sources.
-
-    MUST NOT raise — returns empty frame on any failure.
-    """
-    rows: list = []
-    try:
-        creds = get_credentials()
-    except Exception as exc:
-        logger.warning("_load_apr_clean_list: get_credentials failed: %s", exc)
-        return _empty_us_verified()
-
-    for attempt in range(MAX_RETRIES):
-        try:
-            svc  = build("sheets", "v4", credentials=creds, cache_discovery=False)
-            rows = (
-                svc.spreadsheets().values()
-                .get(spreadsheetId=US_VERIFIED_APR_SHEET_ID,
-                     range=f"'{US_VERIFIED_APR_TAB}'")
-                .execute()
-                .get("values", [])
-            )
-            break
-        except Exception as exc:
-            wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
-            logger.warning("_load_apr_clean_list: retry %d/%d (%s)",
-                           attempt + 1, MAX_RETRIES, exc)
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(wait)
-            else:
-                logger.error("_load_apr_clean_list: gave up after %d retries",
-                             MAX_RETRIES)
-                return _empty_us_verified()
-
-    try:
-        df = _rows_to_df(rows)
-        if df.empty:
-            return _empty_us_verified()
-
-        df.columns = [c.strip() for c in df.columns]
-        cmap = {c.lower(): c for c in df.columns}
-
-        def _col(*c):
-            for k in c:
-                if k.lower() in cmap: return cmap[k.lower()]
-            return None
-
-        status_col = _col("Status")
-        prod_col   = _col("Product Model", "Product", "Product Title")
-        date_col   = _col("Order Date", "subscription_activation_date",
-                          "Created At", "Activation Date")
-        sub_col    = _col("Subscription ID", "subscription_id")
-        email_col  = _col("Customer email", "Email", "customer_email")
-
-        if status_col is None or prod_col is None or date_col is None:
-            logger.warning("_load_apr_clean_list: missing required column")
-            return _empty_us_verified()
-
-        status_norm = df[status_col].fillna("").astype(str).str.strip().str.upper()
-        valid_mask  = status_norm.isin({"VALIDATED", "VAILDATED"})
-        parsed_date = _parse_dates(df[date_col])
-        valid_mask  = valid_mask & parsed_date.notna()
-
-        sub_series = df[sub_col].fillna("").astype(str).str.strip() if sub_col \
-                     else pd.Series([""] * len(df), index=df.index)
-
-        df = df[valid_mask].copy()
-        if df.empty:
-            return _empty_us_verified()
-        parsed_date = parsed_date[valid_mask]
-        sub_series  = sub_series[valid_mask]
-
-        # Filter to APRIL ONLY — May and later come from other sources
-        apr_only = (parsed_date >= pd.Timestamp("2026-04-01")) & \
-                   (parsed_date <  pd.Timestamp("2026-05-01"))
-        df          = df[apr_only].copy()
-        parsed_date = parsed_date[apr_only]
-        sub_series  = sub_series[apr_only]
-        if df.empty:
-            logger.info("_load_apr_clean_list: 0 April rows after filter")
-            return _empty_us_verified()
-
-        out = pd.DataFrame(index=df.index)
-        out["subscription_id"]            = sub_series
-        out["customer_email"]             = df[email_col].astype(str).str.strip() if email_col else ""
-        out["status"]                     = "ACTIVE"
-        out["product_title"]              = df[prod_col].astype(str).str.strip()
-        out["variant_title"]              = ""  # CLEAN LIST doesn't track variant
-        out["sku"]                        = ""
-        out["recurring_price"]            = out["product_title"].map(US_PRICE_MAP).fillna(0.0)
-        out["quantity"]                   = 1
-        out["charge_interval_frequency"]  = 1.0
-        out["created_at_dt"]              = pd.to_datetime(parsed_date.values).normalize()
-        out["cancelled_at_dt"]            = pd.NaT
-        out["is_true_cancel"]             = False
-        out["cancellation_reason"]        = "Not Specified"
-        out["market"]                     = "USA"
-        out["currency"]                   = "USD"
-        out = _classify_and_arr(out).reset_index(drop=True)
-
-        logger.info("_load_apr_clean_list: %d Apr rows loaded", len(out))
-        return out
-    except Exception as exc:
-        logger.exception("_load_apr_clean_list: parse failed: %s", exc)
-        return _empty_us_verified()
-
-
-def _load_recharge_schema_usa_tab(tab_name: str,
-                                   date_min: pd.Timestamp | None = None,
-                                   date_max: pd.Timestamp | None = None,
-                                   label: str = "") -> pd.DataFrame:
-    """
-    Parser for a USA tab that already uses the Recharge schema
-    (subscription_id, customer_email, status, product_title, recurring_price,
-    quantity, charge_interval_frequency, created_at, cancelled_at, ...).
-
-    Used for both 'US Verified - May 2026' and 'Stripe - USA' since they
-    share the schema. Optional [date_min, date_max) window so the
-    Stripe - USA tab can be clipped to Jun 2+ only.
-
-    MUST NOT raise.
-    """
-    try:
-        raw_data, _errors, _elapsed = _fetch_all_tabs()
-        rows = raw_data.get(tab_name, [])
-        df = _rows_to_df(rows)
-        if df.empty:
-            return _empty_us_verified()
-
-        df.columns = [c.strip() for c in df.columns]
-        cmap = {c.lower(): c for c in df.columns}
-
-        def _col(*c):
-            for k in c:
-                if k.lower() in cmap: return cmap[k.lower()]
-            return None
-
-        sub_col      = _col("subscription_id")
-        email_col    = _col("customer_email", "Customer email", "Email")
-        status_col   = _col("status")
-        prod_col     = _col("product_title", "Product Title")
-        variant_col  = _col("variant_title", "Variant Title")
-        sku_col      = _col("sku", "SKU")
-        price_col    = _col("recurring_price")
-        qty_col      = _col("quantity")
-        freq_col     = _col("charge_interval_frequency")
-        created_col  = _col("created_at", "Created At")
-        cancelled_col = _col("cancelled_at", "Cancelled At")
-
-        if not (created_col and prod_col):
-            logger.warning("_load_recharge_schema_usa_tab[%s]: missing required cols", tab_name)
-            return _empty_us_verified()
-
-        parsed_created = _parse_dates(df[created_col])
-        parsed_cancel  = _parse_dates(df[cancelled_col]) if cancelled_col else pd.Series(pd.NaT, index=df.index)
-
-        # Diagnostic: warn loudly if any non-empty created_at strings fail to
-        # parse (silent drops have bitten us in the past — e.g. when Stripe
-        # switched from DD/MM/YYYY to ISO timestamps in Jun 2026).
-        raw_nonempty = df[created_col].astype(str).str.strip().replace({"nan": ""}) != ""
-        unparseable = raw_nonempty & parsed_created.isna()
-        if unparseable.any():
-            samples = df.loc[unparseable, created_col].astype(str).head(3).tolist()
-            logger.warning(
-                "[%s] %d rows have a created_at value that _parse_dates "
-                "couldn't read — these will be DROPPED. Samples: %s. "
-                "Add the format to _parse_dates if it's a new convention.",
-                tab_name, int(unparseable.sum()), samples,
-            )
-
-        valid_mask = parsed_created.notna()
-
-        # Optional date window
-        if date_min is not None:
-            valid_mask = valid_mask & (parsed_created >= date_min)
-        if date_max is not None:
-            valid_mask = valid_mask & (parsed_created < date_max)
-
-        # Diagnostic: warn if the window filter discards parseable rows
-        # (helps surface "Stripe rows being parsed as April" bugs early).
-        window_dropped = parsed_created.notna() & ~valid_mask
-        if window_dropped.any():
-            wd_samples = df.loc[window_dropped].head(3).apply(
-                lambda r: f"{r.get(created_col, '')!r}→{parsed_created.loc[r.name]:%Y-%m-%d}",
-                axis=1,
-            ).tolist()
-            logger.info(
-                "[%s] %d rows parsed OK but fell outside the window "
-                "[%s, %s). Samples: %s",
-                tab_name, int(window_dropped.sum()),
-                date_min.strftime("%Y-%m-%d") if date_min is not None else "−∞",
-                date_max.strftime("%Y-%m-%d") if date_max is not None else "+∞",
-                wd_samples,
-            )
-
-        df = df[valid_mask].copy()
-        if df.empty:
-            return _empty_us_verified()
-        parsed_created = parsed_created[valid_mask]
-        parsed_cancel  = parsed_cancel[valid_mask]
-
-        # Status normalisation — Stripe uses 'trialing'/'active'/'canceled'
-        raw_status = df[status_col].astype(str).str.strip().str.upper() if status_col else pd.Series("ACTIVE", index=df.index)
-        # Anything not CANCELLED/CANCELED/DELETED is treated as ACTIVE for dashboard
-        is_cancelled = raw_status.isin({"CANCELLED", "CANCELED", "DELETED"})
-
-        out = pd.DataFrame(index=df.index)
-        out["subscription_id"] = df[sub_col].astype(str).str.strip() if sub_col else ""
-        out["customer_email"]  = df[email_col].astype(str).str.strip() if email_col else ""
-        out["status"]          = raw_status.where(~is_cancelled, "CANCELLED").where(is_cancelled, "ACTIVE")
-        out["product_title"]   = df[prod_col].astype(str).str.strip()
-        out["variant_title"]   = df[variant_col].astype(str).str.strip() if variant_col else ""
-        out["sku"]             = df[sku_col].astype(str).str.strip() if sku_col else ""
-        out["recurring_price"] = pd.to_numeric(df[price_col], errors="coerce").fillna(0.0) if price_col else 0.0
-        out["quantity"]        = pd.to_numeric(df[qty_col], errors="coerce").fillna(1).astype(int) if qty_col else 1
-        out["quantity"]        = out["quantity"].clip(lower=1)
-        out["charge_interval_frequency"] = pd.to_numeric(df[freq_col], errors="coerce").fillna(1.0).apply(
-            lambda x: 1.0 if x == 30 else float(x or 1.0)
-        ) if freq_col else 1.0
-        # Normalise to midnight to match Recharge UAE/KSA tabs — same-day
-        # filters (e.g. "Today's Sales") rely on midnight semantics.
-        out["created_at_dt"]   = pd.to_datetime(parsed_created.values).normalize()
-        out["cancelled_at_dt"] = pd.to_datetime(parsed_cancel.values).normalize() if parsed_cancel.notna().any() else parsed_cancel.values
-        out["is_true_cancel"]  = is_cancelled.values
-        out["cancellation_reason"] = "Not Specified"
-        out["market"]          = "USA"
-        out["currency"]        = "USD"
-
-        # Map product titles: Stripe uses 'wisewell-nano' (lowercase, hyphenated);
-        # May tab uses 'Wisewell Nano' / 'Wisewell Model 1'. Normalise so the
-        # existing _classify_recharge_product regex catches both.
-        norm = out["product_title"].str.lower().str.replace("-", " ", regex=False).str.strip()
-        out["product_title"] = norm.map({
-            "wisewell nano":    "Wisewell Nano",
-            "wisewell model 1": "Wisewell Model 1",
-            "filter subscription": "Filter Subscription",
-        }).fillna(out["product_title"])
-
-        out = _classify_and_arr(out).reset_index(drop=True)
-        logger.info("_load_recharge_schema_usa_tab[%s]: %d rows loaded (%s)",
-                    tab_name, len(out), label or "no window")
-        return out
-    except Exception as exc:
-        logger.exception("_load_recharge_schema_usa_tab[%s]: parse failed: %s", tab_name, exc)
-        return _empty_us_verified()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_us_verified_subscriptions() -> pd.DataFrame:
     """
-    Stitched USA subscription dataset from three vetted sources:
+    USA subscriptions — single source of truth: the "US Verified" tab in the
+    main sheet (a flat Shopify-style order export, one row per line item).
 
-      • April 2026 (Apr 23–30):  CLEAN LIST external sheet (manual review)
-      • May 2026:                'US Verified - May 2026' tab (Shopify-
-                                 verified, one row per order line item)
-      • Jun 2+ 2026:             'Stripe - USA' tab (live Stripe billing)
+    Schema of the tab:
+      Order number | Created at | Customer name | Customer email |
+      Customer state | Order total | Lineitem name | Lineitem sku |
+      Lineitem quantity
 
-    Each source loader is independently resilient: if one fails the others
-    still populate. Returns a DataFrame in load_recharge_full's schema so it
-    can be concatenated directly inside the USA override.
+    Notes:
+      • Lineitem name carries product + colour, e.g. "Wisewell Model 1 (Black)".
+        We split into product_title ("Wisewell Model 1") + variant ("Black").
+      • The tab has NO cancellation columns → every row is treated as an
+        active gross sale (is_true_cancel = False, cancelled_at = NaT).
+        There is therefore no USA churn signal from this source.
+      • Price is not in the tab → recurring_price comes from US_PRICE_MAP
+        (Nano $40, Model 1 $70).
+      • @wisewell.com internal/test rows are dropped entirely.
 
-    Columns: subscription_id, customer_email, status, product_title,
-    recurring_price, quantity, charge_interval_frequency, created_at_dt,
-    cancelled_at_dt, is_true_cancel, cancellation_reason, market, currency,
-    category, product, arr_local
+    Returns a DataFrame in load_recharge_full's schema so it can be
+    concatenated directly inside the USA override. MUST NOT raise.
     """
-    apr = _load_apr_clean_list()
-    may = _load_recharge_schema_usa_tab(
-        US_VERIFIED_MAY_TAB,
-        date_min=pd.Timestamp("2026-05-01"),
-        date_max=pd.Timestamp("2026-06-01"),
-        label="May",
-    )
-    jun_onwards = _load_recharge_schema_usa_tab(
-        US_STRIPE_TAB,
-        date_min=pd.Timestamp("2026-06-02"),
-        date_max=None,
-        label="Jun 2+",
-    )
+    try:
+        raw_data, _errors, _elapsed = _fetch_all_tabs()
+        df = _rows_to_df(raw_data.get(US_VERIFIED_TAB, []))
+        if df.empty:
+            return _empty_us_verified()
 
-    pieces = [p for p in (apr, may, jun_onwards) if not p.empty]
-    if not pieces:
+        df.columns = [c.strip() for c in df.columns]
+        cmap = {c.lower(): c for c in df.columns}
+
+        def _col(*cands):
+            for c in cands:
+                if c.lower() in cmap:
+                    return cmap[c.lower()]
+            return None
+
+        order_col   = _col("Order number", "Order #", "order_id")
+        date_col    = _col("Created at", "created_at")
+        email_col   = _col("Customer email", "customer_email", "Email")
+        name_col    = _col("Lineitem name", "product_title", "Product")
+        sku_col     = _col("Lineitem sku", "sku")
+        qty_col     = _col("Lineitem quantity", "quantity")
+
+        if not (date_col and name_col):
+            logger.warning("load_us_verified_subscriptions: US Verified missing "
+                           "required columns (date=%s, name=%s)", date_col, name_col)
+            return _empty_us_verified()
+
+        # Dates: "2026-06-04 14:23:06.964+00" — parse as UTC, drop tz, midnight.
+        created = pd.to_datetime(df[date_col], utc=True, errors="coerce")
+        created = created.dt.tz_localize(None).dt.normalize()
+
+        # Lineitem name → product_title + variant colour.
+        raw_name = df[name_col].astype(str).str.strip()
+        # Colour inside trailing parentheses, e.g. "(Black)".
+        variant = raw_name.str.extract(r"\(([^)]*)\)\s*$", expand=False).fillna("").str.strip()
+        product_title = raw_name.str.replace(r"\s*\([^)]*\)\s*$", "", regex=True).str.strip()
+
+        out = pd.DataFrame(index=df.index)
+        out["subscription_id"]           = (df[order_col].astype(str).str.strip()
+                                            if order_col else raw_name.index.map(lambda i: f"usv_{i}"))
+        out["customer_email"]            = df[email_col].astype(str).str.strip() if email_col else ""
+        out["status"]                    = "ACTIVE"
+        out["product_title"]             = product_title
+        out["variant_title"]             = variant
+        out["sku"]                       = df[sku_col].astype(str).str.strip() if sku_col else ""
+        out["recurring_price"]           = product_title.map(US_PRICE_MAP).fillna(0.0)
+        out["quantity"]                  = (pd.to_numeric(df[qty_col], errors="coerce")
+                                            .fillna(1).astype(int).clip(lower=1) if qty_col else 1)
+        out["charge_interval_frequency"] = 1.0
+        out["created_at_dt"]             = created.values
+        out["cancelled_at_dt"]           = pd.NaT
+        out["is_true_cancel"]            = False
+        out["cancellation_reason"]       = "Not Specified"
+        out["market"]                    = "USA"
+        out["currency"]                  = "USD"
+
+        # Require a parseable created date.
+        out = out[out["created_at_dt"].notna()].copy()
+
+        out = _classify_and_arr(out)
+
+        # ── Drop internal / test rows (@wisewell.com) entirely ────────────
+        email_lc = out["customer_email"].fillna("").astype(str).str.strip().str.lower()
+        is_test = email_lc.str.endswith("@wisewell.com")
+        if is_test.any():
+            logger.info(
+                "load_us_verified_subscriptions: dropped %d internal/test rows (%s)",
+                int(is_test.sum()), ", ".join(sorted(email_lc[is_test].unique())[:5]),
+            )
+            out = out[~is_test]
+
+        out = out.reset_index(drop=True)
+        logger.info("load_us_verified_subscriptions: %d USA rows from '%s'",
+                    len(out), US_VERIFIED_TAB)
+        return out
+    except Exception as exc:
+        logger.exception("load_us_verified_subscriptions: failed (%s)", exc)
         return _empty_us_verified()
-    combined = pd.concat(pieces, ignore_index=True)
-
-    # ── Drop internal / test subscriptions entirely ───────────────────────
-    # Test subs (e.g. sheraz.temp@wisewell.com trial runs, jose@wisewell.com
-    # checkout tests) must not appear anywhere: not in gross sales, not in
-    # the user base, not in churn. Real customers who cancelled are NOT
-    # touched by this filter — they still count as a gross sale on their
-    # created_at and as a churn event on their cancelled_at.
-    email_lc = combined["customer_email"].fillna("").astype(str).str.strip().str.lower()
-    is_test = email_lc.str.endswith("@wisewell.com")
-    if is_test.any():
-        logger.info(
-            "load_us_verified_subscriptions: dropped %d internal/test rows (%s)",
-            int(is_test.sum()),
-            ", ".join(sorted(email_lc[is_test].unique())[:5]),
-        )
-        combined = combined[~is_test].reset_index(drop=True)
-
-    logger.info(
-        "load_us_verified_subscriptions: total %d rows  (Apr=%d, May=%d, Jun+=%d)",
-        len(combined), len(apr), len(may), len(jun_onwards),
-    )
-    return combined
 
 
 @st.cache_data(ttl=300, show_spinner=False)
