@@ -62,8 +62,8 @@ RAW_TABS = [
     "Sessions by Source - Daily",
     "Top Landing Pages - Daily",
     "Projections",
-    # USA verified single source (see "USA sales: single verified source" below)
-    "US Verified",
+    # Historical Stripe-era USA orders (see "USA sales" section below)
+    "Stripe - USA",
     # Justlife marketplace subscriptions — counted as UAE (see load_recharge_full)
     "Justlife - UAE",
 ]
@@ -92,20 +92,26 @@ CATEGORY_COLOR = {"Machine": "#0ea5e9", "Filter": "#10b981"}
 MARKET_COLOR   = {"UAE": "#6366f1", "KSA": "#f59e0b", "USA": "#10b981"}
 FX_FALLBACK    = {"AED": 1 / 3.6725, "SAR": 1 / 3.75, "USD": 1.0}
 
-# ── USA sales: single verified source ─────────────────────────────────────────
-# Raw Recharge - USA is discarded on load (was ~94% fraudulent first-month-free
-# scammers). It is replaced by the manually-curated "US Verified" tab in the
-# main sheet — a flat Shopify-style order export (one row per line item). This
-# superseded the earlier three-source stitch (CLEAN LIST + US Verified - May
-# 2026 + Stripe - USA) as of 2026-07.
-US_VERIFIED_TAB = "US Verified"   # single source, in main sheet
+# ── USA sales: two live sources, treated exactly like UAE / KSA ───────────────
+# As of 2026-07 the USA is a first-class market:
+#   1. "Recharge - USA" — the live Recharge tab (Zapier writes new subs,
+#      cancellations and deletions in real time). Same schema as UAE/KSA and
+#      carries its own recurring_price column, so it flows straight through
+#      load_recharge_full's standard pipeline (sales + churn + deletions).
+#   2. "Stripe - USA" — historical orders from the period we billed via Stripe
+#      instead of Shopify Payments. A flat Shopify-style export with NO price
+#      and NO cancellation columns, so every row is an active gross sale and
+#      recurring_price is imputed from US_STRIPE_PRICE below.
+# (This replaces the earlier "US Verified" single-source override, which
+# discarded raw Recharge - USA as fraud. That override is gone.)
+STRIPE_USA_TAB = "Stripe - USA"   # historical Stripe-era USA orders, main sheet
 
-# USA subscription pricing (USD/month) — the US Verified tab has no price, so
-# ARR is derived from this map. Keyed by product_title after the "(colour)"
-# suffix is stripped from Lineitem name.
-US_PRICE_MAP = {
-    "Wisewell Model 1": 70.0,
-    "Wisewell Nano":    40.0,
+# Stripe - USA carries no recurring price. Impute the standard USA monthly
+# price per product (USD/month), keyed by product_title after the "(colour)"
+# suffix is stripped from the Lineitem name.
+US_STRIPE_PRICE = {
+    "Wisewell Model 1": 69.99,
+    "Wisewell Nano":    39.99,
 }
 
 # Justlife (UAE marketplace) feed carries no price. Fill from the standard
@@ -463,7 +469,7 @@ def _fetch_all_tabs() -> tuple[dict[str, list], dict[str, str], float]:
 
 # ── Raw data loaders ──────────────────────────────────────────────────────────
 
-_US_VERIFIED_EMPTY_SCHEMA = [
+_USA_FLAT_EMPTY_SCHEMA = [
     "subscription_id", "customer_email", "status", "product_title",
     "variant_title", "sku",
     "recurring_price", "quantity", "charge_interval_frequency",
@@ -473,9 +479,9 @@ _US_VERIFIED_EMPTY_SCHEMA = [
 ]
 
 
-def _empty_us_verified() -> pd.DataFrame:
+def _empty_usa_flat() -> pd.DataFrame:
     """Empty frame in the load_recharge_full schema (for safe concat fallback)."""
-    return pd.DataFrame(columns=_US_VERIFIED_EMPTY_SCHEMA)
+    return pd.DataFrame(columns=_USA_FLAT_EMPTY_SCHEMA)
 
 
 def _classify_and_arr(out: pd.DataFrame) -> pd.DataFrame:
@@ -495,10 +501,10 @@ def _classify_and_arr(out: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_us_verified_subscriptions() -> pd.DataFrame:
+def load_stripe_usa_subscriptions() -> pd.DataFrame:
     """
-    USA subscriptions — single source of truth: the "US Verified" tab in the
-    main sheet (a flat Shopify-style order export, one row per line item).
+    Historical USA orders from the Stripe-billing era: the "Stripe - USA" tab
+    in the main sheet (a flat Shopify-style order export, one row per line item).
 
     Schema of the tab:
       Order number | Created at | Customer name | Customer email |
@@ -509,20 +515,20 @@ def load_us_verified_subscriptions() -> pd.DataFrame:
       • Lineitem name carries product + colour, e.g. "Wisewell Model 1 (Black)".
         We split into product_title ("Wisewell Model 1") + variant ("Black").
       • The tab has NO cancellation columns → every row is treated as an
-        active gross sale (is_true_cancel = False, cancelled_at = NaT).
-        There is therefore no USA churn signal from this source.
-      • Price is not in the tab → recurring_price comes from US_PRICE_MAP
-        (Nano $40, Model 1 $70).
+        active gross sale (is_true_cancel = False, cancelled_at = NaT). Churn
+        for the USA comes from the live "Recharge - USA" tab instead.
+      • Order total is not a recurring price → recurring_price is imputed from
+        US_STRIPE_PRICE (Nano $39.99, Model 1 $69.99).
       • @wisewell.com internal/test rows are dropped entirely.
 
-    Returns a DataFrame in load_recharge_full's schema so it can be
-    concatenated directly inside the USA override. MUST NOT raise.
+    Returns a DataFrame in load_recharge_full's schema so it can be appended
+    directly to the (already-loaded) live USA Recharge rows. MUST NOT raise.
     """
     try:
         raw_data, _errors, _elapsed = _fetch_all_tabs()
-        df = _rows_to_df(raw_data.get(US_VERIFIED_TAB, []))
+        df = _rows_to_df(raw_data.get(STRIPE_USA_TAB, []))
         if df.empty:
-            return _empty_us_verified()
+            return _empty_usa_flat()
 
         df.columns = [c.strip() for c in df.columns]
         cmap = {c.lower(): c for c in df.columns}
@@ -541,9 +547,9 @@ def load_us_verified_subscriptions() -> pd.DataFrame:
         qty_col     = _col("Lineitem quantity", "quantity")
 
         if not (date_col and name_col):
-            logger.warning("load_us_verified_subscriptions: US Verified missing "
+            logger.warning("load_stripe_usa_subscriptions: Stripe - USA missing "
                            "required columns (date=%s, name=%s)", date_col, name_col)
-            return _empty_us_verified()
+            return _empty_usa_flat()
 
         # Dates: "2026-06-04 14:23:06.964+00" — parse as UTC, drop tz, midnight.
         created = pd.to_datetime(df[date_col], utc=True, errors="coerce")
@@ -556,14 +562,14 @@ def load_us_verified_subscriptions() -> pd.DataFrame:
         product_title = raw_name.str.replace(r"\s*\([^)]*\)\s*$", "", regex=True).str.strip()
 
         out = pd.DataFrame(index=df.index)
-        out["subscription_id"]           = (df[order_col].astype(str).str.strip()
-                                            if order_col else raw_name.index.map(lambda i: f"usv_{i}"))
+        out["subscription_id"]           = ("stripe_" + df[order_col].astype(str).str.strip()
+                                            if order_col else raw_name.index.map(lambda i: f"stripe_{i}"))
         out["customer_email"]            = df[email_col].astype(str).str.strip() if email_col else ""
         out["status"]                    = "ACTIVE"
         out["product_title"]             = product_title
         out["variant_title"]             = variant
         out["sku"]                       = df[sku_col].astype(str).str.strip() if sku_col else ""
-        out["recurring_price"]           = product_title.map(US_PRICE_MAP).fillna(0.0)
+        out["recurring_price"]           = product_title.map(US_STRIPE_PRICE).fillna(0.0)
         out["quantity"]                  = (pd.to_numeric(df[qty_col], errors="coerce")
                                             .fillna(1).astype(int).clip(lower=1) if qty_col else 1)
         out["charge_interval_frequency"] = 1.0
@@ -584,18 +590,18 @@ def load_us_verified_subscriptions() -> pd.DataFrame:
         is_test = email_lc.str.endswith("@wisewell.com")
         if is_test.any():
             logger.info(
-                "load_us_verified_subscriptions: dropped %d internal/test rows (%s)",
+                "load_stripe_usa_subscriptions: dropped %d internal/test rows (%s)",
                 int(is_test.sum()), ", ".join(sorted(email_lc[is_test].unique())[:5]),
             )
             out = out[~is_test]
 
         out = out.reset_index(drop=True)
-        logger.info("load_us_verified_subscriptions: %d USA rows from '%s'",
-                    len(out), US_VERIFIED_TAB)
+        logger.info("load_stripe_usa_subscriptions: %d USA rows from '%s'",
+                    len(out), STRIPE_USA_TAB)
         return out
     except Exception as exc:
-        logger.exception("load_us_verified_subscriptions: failed (%s)", exc)
-        return _empty_us_verified()
+        logger.exception("load_stripe_usa_subscriptions: failed (%s)", exc)
+        return _empty_usa_flat()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -771,38 +777,25 @@ def load_recharge_full() -> pd.DataFrame:
             df[c] = ""
     df = df[[c for c in keep if c in df.columns]].copy()
 
-    # ── USA verified-only override ────────────────────────────────────────
-    # Strip raw USA Recharge rows (assumed fraudulent until verified) and
-    # replace with the manually-verified CLEAN LIST. See header comment near
-    # US_VERIFIED_SHEET_ID for context. Temporary measure as of 2026-05-08.
-    #
-    # WRAPPED in try/except so any failure here (sheet unavailable, parsing
-    # error, etc.) NEVER takes down the dashboard. Worst case: USA falls
-    # back to the raw Recharge data (less ideal, but page renders).
+    # ── Stripe - USA (historical, additive) ───────────────────────────────
+    # Append the Stripe-era USA orders to the live Recharge - USA rows already
+    # in `df`. These are a distinct historical source (flat export, no price,
+    # no churn) so we ADD them rather than replace anything. WRAPPED in
+    # try/except so any failure here NEVER takes down the dashboard — worst
+    # case the USA simply lacks its Stripe-era backfill.
     try:
-        _usa_raw_count = int((df["market"] == "USA").sum()) if "market" in df.columns else 0
-        us_verified = load_us_verified_subscriptions()
-        if us_verified is None:
-            us_verified = _empty_us_verified()
-        # Only strip USA rows if we actually got verified data — otherwise
-        # keep raw USA so the dashboard isn't blank.
-        if not us_verified.empty:
-            df = df[df["market"] != "USA"].copy()
-            us_verified = us_verified[[c for c in keep if c in us_verified.columns]].copy()
-            df = pd.concat([df, us_verified], ignore_index=True)
+        stripe_usa = load_stripe_usa_subscriptions()
+        if stripe_usa is None:
+            stripe_usa = _empty_usa_flat()
+        if not stripe_usa.empty:
+            stripe_usa = stripe_usa[[c for c in keep if c in stripe_usa.columns]].copy()
+            df = pd.concat([df, stripe_usa], ignore_index=True)
             logger.info(
-                "load_recharge_full: USA override — dropped %d raw rows, "
-                "added %d verified rows", _usa_raw_count, len(us_verified),
-            )
-        else:
-            logger.warning(
-                "load_recharge_full: USA override SKIPPED — verified list empty "
-                "or unavailable. Falling back to %d raw USA rows.", _usa_raw_count,
+                "load_recharge_full: +%d Stripe-USA rows appended", len(stripe_usa),
             )
     except Exception as exc:
         logger.exception(
-            "load_recharge_full: USA override crashed (%s) — falling back to raw USA",
-            exc,
+            "load_recharge_full: Stripe-USA append crashed (%s) — skipped", exc,
         )
 
     return df
@@ -892,7 +885,7 @@ def get_sku_sales(start_dt: pd.Timestamp | None = None) -> pd.DataFrame:
     Unified SKU-level sales for the inventory / supply-chain team.
 
     Combines:
-      • Recharge subscriptions (UAE + KSA + USA verified + Stripe-USA),
+      • Recharge subscriptions (UAE + KSA + live USA Recharge + Stripe-USA),
         Machine category only
       • Shopify - UAE / KSA ownership rows (parsed from Lineitem sku +
         Lineitem name for variant info)
