@@ -790,8 +790,29 @@ def load_recharge_full() -> pd.DataFrame:
         if not stripe_usa.empty:
             stripe_usa = stripe_usa[[c for c in keep if c in stripe_usa.columns]].copy()
             df = pd.concat([df, stripe_usa], ignore_index=True)
+
+            # ── Dedup: Recharge wins ──────────────────────────────────────
+            # A customer who ordered in the Stripe era and later appears in
+            # the live Recharge - USA tab would otherwise be double-counted.
+            # For any email present in live Recharge - USA, drop that
+            # customer's Stripe-USA rows entirely (keep the Recharge record,
+            # which has the real status + churn). ~32 such emails as of
+            # 2026-07-27.
+            _usa      = df["market"] == "USA"
+            _stripe   = df["subscription_id"].astype(str).str.startswith("stripe_")
+            _em       = df["customer_email"].fillna("").astype(str).str.lower().str.strip()
+            _rech_ems = set(_em[_usa & ~_stripe]) - {"", "nan"}
+            _dup      = _stripe & _em.isin(_rech_ems)
+            if _dup.any():
+                logger.info(
+                    "load_recharge_full: dedup dropped %d Stripe-USA rows whose "
+                    "email also exists in live Recharge - USA (Recharge wins)",
+                    int(_dup.sum()),
+                )
+                df = df[~_dup].copy()
+
             logger.info(
-                "load_recharge_full: +%d Stripe-USA rows appended", len(stripe_usa),
+                "load_recharge_full: +%d Stripe-USA rows appended (pre-dedup)", len(stripe_usa),
             )
     except Exception as exc:
         logger.exception(
