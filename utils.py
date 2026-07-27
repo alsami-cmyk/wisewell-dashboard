@@ -2173,16 +2173,23 @@ def get_all_machine_sales(
                    + Offline - Ownership                                    → offline
     """
     records = []
-    _sd = start_dt or LIVE_DATA_START
-    _ed = end_dt or pd.Timestamp.today().normalize()
+    # Compare on DAY granularity. This is a by-day sales series, and Recharge
+    # created_at_dt carries a real time-of-day (e.g. 2026-07-24 03:22). If we
+    # filtered the raw timestamp against midnight bounds, a single-day window
+    # (start == end, as the trailing-7d chart uses) or the end-of-range day
+    # would drop every timed row — silently zeroing out same-day sales. So we
+    # normalise both the bounds and each source's date to midnight.
+    _sd = (start_dt or LIVE_DATA_START).normalize()
+    _ed = (end_dt or pd.Timestamp.today()).normalize()
 
     # ── Recharge subscriptions (online) ──────────────────────────────────────
     rc = load_recharge_full()
+    _rc_day = rc["created_at_dt"].dt.normalize()
     rc_machine = rc[
         (rc["category"] == "Machine") &
         rc["created_at_dt"].notna() &
-        (rc["created_at_dt"] >= _sd) &
-        (rc["created_at_dt"] <= _ed)
+        (_rc_day >= _sd) &
+        (_rc_day <= _ed)
     ]
     for _, row in rc_machine.iterrows():
         is_partner = str(row.get("subscription_id", "")).startswith("justlife_")

@@ -163,11 +163,12 @@ def _churned_markets(start_ts: pd.Timestamp, end_ts: pd.Timestamp,
     rc = rc[(rc["category"] == "Machine") & rc["market"].isin(markets)]
     if rc.empty:
         return 0
+    _can_day = rc["cancelled_at_dt"].dt.normalize()
     mask = (
         rc["is_true_cancel"]
         & rc["cancelled_at_dt"].notna()
-        & (rc["cancelled_at_dt"] >= start_ts)
-        & (rc["cancelled_at_dt"] <= end_ts)
+        & (_can_day >= start_ts.normalize())
+        & (_can_day <= end_ts.normalize())
     )
     return int(rc.loc[mask, "quantity"].sum())
 
@@ -376,11 +377,12 @@ def _churned_in(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> int:
     rc_m = _apply_mkt(rc_m)
     if rc_m is None or rc_m.empty:
         return 0
+    _can_day = rc_m["cancelled_at_dt"].dt.normalize()
     mask = (
         rc_m["is_true_cancel"]
         & rc_m["cancelled_at_dt"].notna()
-        & (rc_m["cancelled_at_dt"] >= start_ts)
-        & (rc_m["cancelled_at_dt"] <= end_ts)
+        & (_can_day >= start_ts.normalize())
+        & (_can_day <= end_ts.normalize())
     )
     return int(rc_m.loc[mask, "quantity"].sum())
 
