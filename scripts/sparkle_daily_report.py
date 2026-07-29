@@ -38,7 +38,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import get_fx, load_recharge_full  # noqa: E402
 
 PRODUCT = "Sparkle"
-MARKET_FLAG = {"UAE": "🇦🇪", "KSA": "🇸🇦", "USA": "🇺🇸"}
 
 
 def _fmt_usd(v: float) -> str:
@@ -55,45 +54,59 @@ def _arr_usd(df: pd.DataFrame, fx: dict) -> float:
     return float((arr_local * rate).sum())
 
 
-def _by_market_line(df: pd.DataFrame) -> str:
-    """e.g. '🇦🇪 UAE 2 · 🇺🇸 USA 1' — only markets with >0 units."""
-    if df.empty:
-        return "—"
-    counts = df.groupby("market")["quantity"].sum().astype(int)
-    parts = [
-        f"{MARKET_FLAG.get(m, '')} {m} {int(n)}"
-        for m, n in counts.items() if n > 0
-    ]
-    return "  ·  ".join(parts) if parts else "—"
+def _market_rows(df: pd.DataFrame, fx: dict) -> tuple[list[tuple[str, int, float]], int, float]:
+    """Per-market (label, subs, arr_usd) for markets with >0 subs, plus totals."""
+    rows: list[tuple[str, int, float]] = []
+    tot_subs, tot_arr = 0, 0.0
+    for m in ("UAE", "KSA", "USA"):
+        sub = df[df["market"] == m]
+        subs = int(sub["quantity"].sum()) if not sub.empty else 0
+        if subs <= 0:
+            continue
+        arr = _arr_usd(sub, fx)
+        rows.append((m, subs, arr))
+        tot_subs += subs
+        tot_arr += arr
+    return rows, tot_subs, tot_arr
+
+
+def _table(rows: list[tuple[str, int, float]], tot_subs: int, tot_arr: float,
+           value_header: str) -> str:
+    """Monospace code-block table: Market | Subs | <value_header>.
+
+    A code block keeps columns aligned and renders identically across every
+    Slack surface (native mrkdwn has no real table support).
+    """
+    def _row(label: str, subs: int, arr: float) -> str:
+        return f"{label:<8}{subs:>6}{_fmt_usd(arr):>15}"
+
+    lines = [f"{'Market':<8}{'Subs':>6}{value_header:>15}"]
+    lines.append("─" * 29)
+    for label, subs, arr in rows:
+        lines.append(_row(label, subs, arr))
+    lines.append("─" * 29)
+    lines.append(_row("Total", tot_subs, tot_arr))
+    return "```\n" + "\n".join(lines) + "\n```"
 
 
 def build_report_message(today: date | None = None) -> str:
-    """Return the clean Slack-markdown Sparkle daily report."""
+    """Return the clean Slack Sparkle daily report (yesterday + active base)."""
     today = today or date.today()
     today_ts = pd.Timestamp(today)
     yday = today_ts - pd.Timedelta(days=1)
-    month_start = today_ts.replace(day=1)
 
     fx = get_fx()
     rc = load_recharge_full()
     spark = rc[(rc["product"] == PRODUCT) & (rc["category"] == "Machine")].copy()
-
     created_day = spark["created_at_dt"].dt.normalize()
 
     # Yesterday's new subs
     y = spark[created_day == yday.normalize()]
-    y_units = int(y["quantity"].sum()) if not y.empty else 0
-    y_arr = _arr_usd(y, fx)
-
-    # Month-to-date new subs (1st of month → yesterday inclusive)
-    mtd = spark[(created_day >= month_start) & (created_day <= yday.normalize())]
-    mtd_units = int(mtd["quantity"].sum()) if not mtd.empty else 0
-    mtd_arr = _arr_usd(mtd, fx)
+    y_rows, y_subs, y_arr = _market_rows(y, fx)
 
     # Currently-active base
     active = spark[spark["status"] == "ACTIVE"]
-    a_units = int(active["quantity"].sum()) if not active.empty else 0
-    a_arr = _arr_usd(active, fx)
+    a_rows, a_subs, a_arr = _market_rows(active, fx)
 
     lines = [
         "✨ *Wisewell Sparkle — Daily Sales*",
@@ -101,24 +114,20 @@ def build_report_message(today: date | None = None) -> str:
         "",
         f"*Yesterday · {yday:%a %d %b}*",
     ]
-    if y_units:
-        lines += [
-            f"• New subscriptions:  *{y_units}*",
-            f"• By market:  {_by_market_line(y)}",
-            f"• New ARR added:  *{_fmt_usd(y_arr)}*",
-        ]
+    if y_subs:
+        lines.append(_table(y_rows, y_subs, y_arr, "ARR Added"))
     else:
-        lines += ["• No new Sparkle subscriptions. :zzz:"]
+        lines.append("_No new Sparkle subscriptions._")
 
     lines += [
         "",
-        f"*Month to date · {month_start:%b %Y}*",
-        f"• New subscriptions:  *{mtd_units}*   ·   ARR added:  *{_fmt_usd(mtd_arr)}*",
-        "",
         "*Active Sparkle base*",
-        f"• Active subs:  *{a_units}*   ·   Run-rate ARR:  *{_fmt_usd(a_arr)}*",
-        f"• By market:  {_by_market_line(active)}",
     ]
+    if a_subs:
+        lines.append(_table(a_rows, a_subs, a_arr, "Run-Rate"))
+    else:
+        lines.append("_No active Sparkle subscriptions._")
+
     return "\n".join(lines)
 
 
