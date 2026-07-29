@@ -76,7 +76,7 @@ MAX_RETRIES   = 3
 RETRY_BACKOFF = [1, 2, 4]
 
 # ── Product catalogue ──────────────────────────────────────────────────────────
-PRODUCT_ORDER = ["Model 1", "Nano+", "Bubble", "Flat", "Nano Tank"]
+PRODUCT_ORDER = ["Model 1", "Nano+", "Bubble", "Flat", "Nano Tank", "Sparkle"]
 
 PRODUCT_COLOR: dict[str, str] = {
     "Model 1":   "#8b5cf6",
@@ -84,6 +84,7 @@ PRODUCT_COLOR: dict[str, str] = {
     "Bubble":    "#f43f5e",
     "Flat":      "#10b981",
     "Nano Tank": "#f59e0b",
+    "Sparkle":   "#ec4899",
     "Filter":    "#94a3b8",
     "Unknown":   "#cbd5e1",
 }
@@ -388,6 +389,10 @@ def _classify_recharge_product(title: str) -> tuple[str | None, str | None]:
         return "Machine", "Bubble"
     if re.search(r"wisewell\s*flat\s*subscription", tl) and "filter" not in tl:
         return "Machine", "Flat"
+    # Sparkle — new product (2026-07). Recharge uses "Wisewell Sparkle
+    # Subscription" in both the US and UAE, so one regex covers both.
+    if re.search(r"sparkle.*subscription", tl) and "filter" not in tl:
+        return "Machine", "Sparkle"
     # Nano Tank:
     #   UAE uses "Wisewell Nano Subscription", USA uses "Wisewell Nano" (no suffix).
     #   Both are subscription products and map to Nano Tank.
@@ -418,6 +423,8 @@ def _classify_offline_product(lineitem: str) -> str | None:
         return "Bubble"
     if re.search(r"\bflat\b", tl) and "filter" not in tl:
         return "Flat"
+    if "sparkle" in tl and "filter" not in tl:
+        return "Sparkle"
     return None
 
 
