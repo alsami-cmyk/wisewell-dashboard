@@ -1,0 +1,36 @@
+name: Wisewell Sparkle — Daily Sales Slack Report
+
+on:
+  # Daily at 10:00 UAE time (UTC+4 = 06:00 UTC)
+  schedule:
+    - cron: "0 6 * * *"
+
+  # Allow manual trigger from the GitHub Actions UI (for testing)
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5.4.0
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install streamlit pandas requests google-auth google-auth-httplib2 google-api-python-client
+
+      - name: Write Google token
+        env:
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+        run: printf '%s' "$GOOGLE_TOKEN_JSON" > token.json
+
+      - name: Send Sparkle daily report to Slack
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_DM_TARGET: U096TNJMBNJ   # Sami's Slack user id (DM target — not sensitive)
+        run: python scripts/sparkle_daily_report.py

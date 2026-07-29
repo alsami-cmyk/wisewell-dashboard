@@ -122,16 +122,13 @@ def build_report_message(today: date | None = None) -> str:
     return "\n".join(lines)
 
 
-def _post_to_slack(message: str) -> None:
-    """Optional self-delivery via Slack Web API (GitHub Actions path)."""
+def _slack_api(method: str, token: str, payload: dict) -> dict:
     import json
     import urllib.request
 
-    token = os.environ["SLACK_BOT_TOKEN"]
-    target = os.environ["SLACK_DM_TARGET"]  # user or channel id
     req = urllib.request.Request(
-        "https://slack.com/api/chat.postMessage",
-        data=json.dumps({"channel": target, "text": message, "mrkdwn": True}).encode(),
+        f"https://slack.com/api/{method}",
+        data=json.dumps(payload).encode(),
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json; charset=utf-8",
@@ -139,7 +136,26 @@ def _post_to_slack(message: str) -> None:
     )
     resp = json.loads(urllib.request.urlopen(req).read().decode())
     if not resp.get("ok"):
-        raise RuntimeError(f"Slack post failed: {resp.get('error')}")
+        raise RuntimeError(f"Slack {method} failed: {resp.get('error')}")
+    return resp
+
+
+def _post_to_slack(message: str) -> None:
+    """Self-delivery via Slack Web API (GitHub Actions path).
+
+    Requires a bot token with `chat:write` (+ `im:write` to open the DM).
+    SLACK_DM_TARGET is a Slack user id (Uxxxx) → we open the DM channel and
+    post there. If a channel id (Cxxxx) is given, we post to it directly.
+    """
+    token = os.environ["SLACK_BOT_TOKEN"]
+    target = os.environ["SLACK_DM_TARGET"]
+
+    channel = target
+    if target.startswith("U"):  # user id → open the DM channel first
+        opened = _slack_api("conversations.open", token, {"users": target})
+        channel = opened["channel"]["id"]
+
+    _slack_api("chat.postMessage", token, {"channel": channel, "text": message})
     print("Posted to Slack.")
 
 
