@@ -135,26 +135,129 @@ SHOPIFY_OWN_COLS = [
     ("Nano Tank", "Units - Nano (Own)"),
 ]
 
-# Cancellation reason normalisation
-CANCELLATION_REASON_MAP: dict[str, str] = {
-    "relocation":             "Relocation",
-    "water quality":          "Water Quality",
-    "personal/lifestyle":     "Personal / Lifestyle",
-    "personal / lifestyle":   "Personal / Lifestyle",
-    "delivery delay":         "Delivery Delay",
-    "machine issues":         "Machine Issues",
-    "water capacity":         "Water Capacity",
-    "operational/error":      "Operational / Error",
-    "operational / error":    "Operational / Error",
-    "switched to competitor": "Switched to Competitor",
-    "financial":              "Financial",
-    "installation issues":    "Installation Issues",
-    "machine fit":            "Machine Fit",
-    # Non-true cancellations (excluded from churn — see is_true_cancel
-    # logic in load_recharge_full):
-    "customer defaulted":     "Customer Defaulted",
-    "customer unreachable":   "Customer Unreachable",
+# ── Cancellation reason taxonomy (2026-07 consolidation) ──────────────────────
+# Recharge moved to a fixed set of canonical cancellation reasons. We map every
+# legacy / free-text reason (past and future) onto that taxonomy so all
+# cancellations read consistently. Two labels sit OUTSIDE the 16 canonical
+# reasons, plus one drop sentinel:
+#   • "Payment Failure"       — involuntary payment-retry auto-cancels. NOT churn.
+#   • "Other / Not Specified" — generic / blank / unmapped. Counts as churn.
+#   • _REASON_DROP            — ops / non-customer rows (ops cleanup, created by
+#                               accident, test/invalid, internal collab) that
+#                               should never have existed. Dropped entirely on
+#                               load, exactly like DELETED rows.
+_REASON_PAYMENT_FAILURE = "Payment Failure"
+_REASON_OTHER           = "Other / Not Specified"
+_REASON_UNRESPONSIVE    = "Delivery Unsuccessful - Unresponsive Customer"
+_REASON_DROP            = "__DROP__"
+
+# Non-churn buckets, ALL markets (is_true_cancel = False). Unresponsive-customer
+# is handled separately (US + UAE only). "Account Abandoned" (was "Customer
+# Defaulted") and "Other / Not Specified" DO count as churn.
+_REASON_NONCHURN_ALL = {"Swap", "Ownership", _REASON_PAYMENT_FAILURE}
+
+# Canonical reason ← legacy/free-text variants. Compared after _norm_reason
+# (lowercase, trim, collapse whitespace, unify curly quotes / dashes).
+_REASON_GROUPS: dict[str, list[str]] = {
+    "Water Quality": [
+        "water quality", "water taste", "water taste (personal preference)",
+        "water taste (bad taste)", "water quality & content",
+        "water content & quality",
+    ],
+    "Water Capacity / Usage Preference": [
+        "water capacity", "cold water capacity", "cold water capacit",
+        "i want a different product or variety",
+    ],
+    "Product Experience & Usability": [
+        "machine functionality", "machine issues", "noisy device", "noisy sound",
+    ],
+    "Delivery Delay": ["delivery delay", "i need it sooner"],
+    "Service Failure": [
+        "operational / error", "operational error", "operations error",
+        "bad service", "interrupted service", "bad installation",
+        "installation issues", "installation unfeasible",
+    ],
+    "Machine Malfunction": [
+        "machine fault", "malfunction machine", "application issues",
+        "application issue", "defective machine", "bad conditions unit",
+    ],
+    "Relocation": [
+        "relocation", "relocation outside the uae", "relocating outside uae",
+        "moved outside uae",
+    ],
+    "Personal / Lifestyle Change": [
+        "personal / lifestyle", "personal/lifestyle", "personal reasons",
+        "personal reasons - not using it", "end of sub. contract",
+        "i no longer use this product", "health concern", "health concerns",
+        "experienced health issues",
+    ],
+    "Financial Constraint": [
+        "financial", "financial reasons", "financial constraints",
+        "this is too expensive",
+    ],
+    'Machine Fit "Size"': [
+        "machine size", "machine fit",
+        "moving house/office - machine doesnt fit",
+        "moving house/office - machine doesn't fit",
+    ],
+    "Switched to Another Provider": [
+        "moved to another competitor", "moved to a competitor",
+        "switched to competitor", "moved to other provider",
+    ],
+    _REASON_UNRESPONSIVE: [
+        "customer unresponsive", "customer unreachable",
+        "delivery unsuccessful - unresponsive",
+    ],
+    "Account Abandoned": ["customer defaulted"],
+    "Swap": [
+        "swapped to", "swapped to nano +", "swapped to nano+",
+        "swapped to model 1", "product swap",
+    ],
+    "Ownership": [
+        "purchased the machine", "purchase", "purchased",
+        "converted to ownership",
+    ],
+    _REASON_PAYMENT_FAILURE: [
+        "failed payment flow max retries", "failed payments",
+        "failed payments - forced cancellation",
+        "max number of charge attempts reached",
+    ],
+    _REASON_OTHER: ["other reason", "other", "others", "not specified", "no reason"],
+    _REASON_DROP: [
+        "order not proceeding (ops cleanup)", "this was created by accident",
+        "test/invalid subscription", "moved to marketing collab",
+    ],
 }
+
+
+def _norm_reason(s: str) -> str:
+    s = str(s).strip().lower()
+    for a, b in (("“", '"'), ("”", '"'), ("’", "'"),
+                 ("–", "-"), ("—", "-")):
+        s = s.replace(a, b)
+    return re.sub(r"\s+", " ", s)
+
+
+# Flatten to alias → canonical. Canonical names map to themselves too, so
+# going-forward Recharge values (already the new reasons) pass through unchanged.
+_REASON_ALIASES: dict[str, str] = {}
+for _canon, _variants in _REASON_GROUPS.items():
+    if _canon != _REASON_DROP:
+        _REASON_ALIASES[_norm_reason(_canon)] = _canon
+    for _v in _variants:
+        _REASON_ALIASES[_norm_reason(_v)] = _canon
+
+
+def _map_cancellation_reason(raw: str) -> str:
+    """Map any raw Recharge cancellation reason onto the canonical taxonomy.
+
+    Blank / unknown → 'Other / Not Specified'. Returns _REASON_DROP for
+    ops/non-customer rows (caller drops those entirely).
+    """
+    n = _norm_reason(raw)
+    if n in ("", "nan", "none"):
+        return _REASON_OTHER
+    return _REASON_ALIASES.get(n, _REASON_OTHER)
 
 # Historical row maps (0-indexed Python list positions in the raw values list)
 # Monthly Sales tab — (market, product, is_ownership) → row index
@@ -583,7 +686,7 @@ def load_stripe_usa_subscriptions() -> pd.DataFrame:
         out["created_at_dt"]             = created.values
         out["cancelled_at_dt"]           = pd.NaT
         out["is_true_cancel"]            = False
-        out["cancellation_reason"]       = "Not Specified"
+        out["cancellation_reason"]       = _REASON_OTHER
         out["market"]                    = "USA"
         out["currency"]                  = "USD"
 
@@ -731,44 +834,36 @@ def load_recharge_full() -> pd.DataFrame:
     df["created_at_dt"]   = _parse_dates(df[ca_col])  if ca_col  else pd.NaT
     df["cancelled_at_dt"] = _parse_dates(df[can_col]) if can_col else pd.NaT
 
-    # True cancellation:
-    #   cancelled_at is set  AND  reason NOT in the excluded group.
-    # Excluded reasons (is_true_cancel = False — never counted as churn):
-    #   • ALL markets — swaps / conversions / upgrades ("swapped",
-    #     "purchased", "converted", "swap", "max"): the customer stayed,
-    #     just on a different product or plan.
-    #   • UAE ONLY (per CS process, 2026-07) —
-    #     "Customer Unreachable": ordered but never responded to delivery
-    #     coordination. The subscription never really began.
-    #     ("Customer Defaulted" was briefly excluded too, but as of 2026-07
-    #     it counts as a TRUE cancellation — a customer who stops paying is
-    #     real churn.)
-    # All excluded reasons still count as gross sales on their created_at.
-    has_cancelled = df["cancelled_at_dt"].notna()
+    # ── Cancellation reason → canonical taxonomy (2026-07) ────────────────
     reason_col = next(
         (c for c in df.columns if "cancellation" in c.lower() and "reason" in c.lower()
          and "comment" not in c.lower()), None
     )
-    raw_reason = df[reason_col].astype(str).str.strip() if reason_col else pd.Series("", index=df.index)
-    reason_lc  = raw_reason.str.lower()
-    is_swap = reason_lc.str.contains(
-        r"swapped|purchased|converted|swap|max", regex=True, na=False
-    )
-    is_uae_writeoff = (df["market"] == "UAE") & reason_lc.str.contains(
-        r"unreachable", regex=True, na=False
-    )
-    df["is_true_cancel"] = has_cancelled & ~(is_swap | is_uae_writeoff)
+    raw_reason = df[reason_col].astype(str) if reason_col else pd.Series("", index=df.index)
+    df["cancellation_reason"] = raw_reason.map(_map_cancellation_reason)
 
-    # Normalise cancellation reason for display
-    if reason_col:
-        normalised = (
-            raw_reason.str.lower()
-            .map(CANCELLATION_REASON_MAP)
-            .fillna(raw_reason.where(raw_reason.ne("") & raw_reason.ne("nan"), "Not Specified"))
-        )
-        df["cancellation_reason"] = normalised
-    else:
-        df["cancellation_reason"] = "Not Specified"
+    # Ops / non-customer cancellations (ops cleanup, created-by-accident,
+    # test/invalid, internal collab) should never have been real subscriptions.
+    # Drop them entirely — exactly like DELETED rows — so they vanish from
+    # sales, user base AND churn.
+    _drop_ops = df["cancellation_reason"] == _REASON_DROP
+    if _drop_ops.any():
+        logger.info("load_recharge_full: dropped %d ops/non-customer cancellation rows",
+                    int(_drop_ops.sum()))
+        df = df[~_drop_ops].copy()
+
+    # True cancellation = cancelled_at set AND reason is NOT a non-churn bucket:
+    #   • ALL markets   — "Swap" / "Ownership" (customer stayed or converted)
+    #                     and "Payment Failure" (involuntary auto-cancel).
+    #   • US + UAE only — "Delivery Unsuccessful - Unresponsive Customer": the
+    #                     order never really began. (KSA still counts it.)
+    # "Account Abandoned" (was "Customer Defaulted") and "Other / Not Specified"
+    # DO count as churn. All rows still count as gross sales on created_at.
+    has_cancelled = df["cancelled_at_dt"].notna()
+    canon = df["cancellation_reason"]
+    nonchurn_all     = canon.isin(_REASON_NONCHURN_ALL)
+    nonchurn_uae_usa = canon.eq(_REASON_UNRESPONSIVE) & df["market"].isin(["UAE", "USA"])
+    df["is_true_cancel"] = has_cancelled & ~(nonchurn_all | nonchurn_uae_usa)
 
     keep = [
         "subscription_id", "customer_email", "status",
