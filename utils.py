@@ -64,6 +64,8 @@ RAW_TABS = [
     "Projections",
     # Historical Stripe-era USA orders (see "USA sales" section below)
     "Stripe - USA",
+    # True start-date override for migrated USA subs (see load_recharge_full)
+    "Recharge - USA Seed",
     # Justlife marketplace subscriptions — counted as UAE (see load_recharge_full)
     "Justlife - UAE",
 ]
@@ -833,6 +835,28 @@ def load_recharge_full() -> pd.DataFrame:
     can_col = next((c for c in df.columns if c.strip().lower() == "cancelled_at"), None)
     df["created_at_dt"]   = _parse_dates(df[ca_col])  if ca_col  else pd.NaT
     df["cancelled_at_dt"] = _parse_dates(df[can_col]) if can_col else pd.NaT
+
+    # ── USA true-start-date override (Recharge - USA Seed) ─────────────────
+    # Many USA subs were migrated into Recharge in Aug-2026, so Recharge's
+    # created_at reflects the MIGRATION date, not the customer's true start
+    # (often months earlier, from the Stripe era). The "Recharge - USA Seed"
+    # tab maps subscription_id → adjusted_created_at (true start). We override
+    # created_at_dt for matching USA rows so sales attribute to the real date.
+    # We NEVER touch the live "Recharge - USA" tab (Zapier owns it and will
+    # self-correct); the seed is a stable, separate override table. Any seed id
+    # not currently in Recharge - USA simply doesn't match — harmless.
+    seed = _rows_to_df(raw_data.get("Recharge - USA Seed", []))
+    if not seed.empty:
+        seed.columns = [c.strip() for c in seed.columns]
+        if {"subscription_id", "adjusted_created_at"}.issubset(seed.columns):
+            seed_dates = _parse_dates(seed["adjusted_created_at"])
+            seed_map = dict(zip(seed["subscription_id"].astype(str).str.strip(), seed_dates))
+            override = (df["subscription_id"].astype(str).str.strip().map(seed_map)
+                        if "subscription_id" in df.columns else pd.Series(pd.NaT, index=df.index))
+            mask = (df["market"] == "USA") & override.notna()
+            if mask.any():
+                logger.info("load_recharge_full: applied USA start-date seed to %d subs", int(mask.sum()))
+                df.loc[mask, "created_at_dt"] = override[mask]
 
     # ── Cancellation reason → canonical taxonomy (2026-07) ────────────────
     reason_col = next(
