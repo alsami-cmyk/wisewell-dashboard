@@ -62,8 +62,6 @@ RAW_TABS = [
     "Sessions by Source - Daily",
     "Top Landing Pages - Daily",
     "Projections",
-    # Historical Stripe-era USA orders (see "USA sales" section below)
-    "Stripe - USA",
     # True start-date override for migrated USA subs (see load_recharge_full)
     "Recharge - USA Seed",
     # Justlife marketplace subscriptions — counted as UAE (see load_recharge_full)
@@ -95,27 +93,21 @@ CATEGORY_COLOR = {"Machine": "#0ea5e9", "Filter": "#10b981"}
 MARKET_COLOR   = {"UAE": "#6366f1", "KSA": "#f59e0b", "USA": "#10b981"}
 FX_FALLBACK    = {"AED": 1 / 3.6725, "SAR": 1 / 3.75, "USD": 1.0}
 
-# ── USA sales: two live sources, treated exactly like UAE / KSA ───────────────
-# As of 2026-07 the USA is a first-class market:
-#   1. "Recharge - USA" — the live Recharge tab (Zapier writes new subs,
-#      cancellations and deletions in real time). Same schema as UAE/KSA and
-#      carries its own recurring_price column, so it flows straight through
-#      load_recharge_full's standard pipeline (sales + churn + deletions).
-#   2. "Stripe - USA" — historical orders from the period we billed via Stripe
-#      instead of Shopify Payments. A flat Shopify-style export with NO price
-#      and NO cancellation columns, so every row is an active gross sale and
-#      recurring_price is imputed from US_STRIPE_PRICE below.
-# (This replaces the earlier "US Verified" single-source override, which
-# discarded raw Recharge - USA as fraud. That override is gone.)
-STRIPE_USA_TAB = "Stripe - USA"   # historical Stripe-era USA orders, main sheet
-
-# Stripe - USA carries no recurring price. Impute the standard USA monthly
-# price per product (USD/month), keyed by product_title after the "(colour)"
-# suffix is stripped from the Lineitem name.
-US_STRIPE_PRICE = {
-    "Wisewell Model 1": 69.99,
-    "Wisewell Nano":    39.99,
-}
+# ── USA sales: ONE live source, treated exactly like UAE / KSA ────────────────
+# "Recharge - USA" is the single source of live USA data (Zapier writes new
+# subs, cancellations and deletions in real time). Same schema as UAE/KSA and
+# it carries its own recurring_price, so it flows straight through
+# load_recharge_full's standard pipeline (sales + churn + deletions).
+#
+# Subscriptions from the earlier Stripe-billing era were MIGRATED INTO Recharge,
+# so they are already present in "Recharge - USA" — only their created_at
+# reflects the migration date. "Recharge - USA Seed" supplies their true start
+# date (see the seed override in load_recharge_full).
+#
+# The old "Stripe - USA" tab has been deleted from the workbook and is no
+# longer read: appending it on top of Recharge would DOUBLE-COUNT the very
+# subscriptions the seed corrects. (This also supersedes the even earlier
+# "US Verified" single-source override, which is long gone.)
 
 # Justlife (UAE marketplace) feed carries no price. Fill from the standard
 # UAE monthly list price per product (AED), derived from Recharge - UAE
@@ -581,141 +573,6 @@ def _fetch_all_tabs() -> tuple[dict[str, list], dict[str, str], float]:
 
 # ── Raw data loaders ──────────────────────────────────────────────────────────
 
-_USA_FLAT_EMPTY_SCHEMA = [
-    "subscription_id", "customer_email", "status", "product_title",
-    "variant_title", "sku",
-    "recurring_price", "quantity", "charge_interval_frequency",
-    "created_at_dt", "cancelled_at_dt", "is_true_cancel",
-    "cancellation_reason", "market", "currency", "category",
-    "product", "arr_local",
-]
-
-
-def _empty_usa_flat() -> pd.DataFrame:
-    """Empty frame in the load_recharge_full schema (for safe concat fallback)."""
-    return pd.DataFrame(columns=_USA_FLAT_EMPTY_SCHEMA)
-
-
-def _classify_and_arr(out: pd.DataFrame) -> pd.DataFrame:
-    """Add category/product/arr_local columns to a USA-source DataFrame."""
-    classified = out["product_title"].map(_classify_recharge_product)
-    out["category"] = classified.map(lambda x: x[0] if x else None)
-    out["product"]  = classified.map(lambda x: x[1] if x else None)
-    out["arr_local"] = out.apply(
-        lambda r: (
-            r["recurring_price"] * r["quantity"] * (12.0 / r["charge_interval_frequency"])
-        ) if r["category"] == "Machine" else 0.0,
-        axis=1,
-    )
-    return out
-
-
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def load_stripe_usa_subscriptions() -> pd.DataFrame:
-    """
-    Historical USA orders from the Stripe-billing era: the "Stripe - USA" tab
-    in the main sheet (a flat Shopify-style order export, one row per line item).
-
-    Schema of the tab:
-      Order number | Created at | Customer name | Customer email |
-      Customer state | Order total | Lineitem name | Lineitem sku |
-      Lineitem quantity
-
-    Notes:
-      • Lineitem name carries product + colour, e.g. "Wisewell Model 1 (Black)".
-        We split into product_title ("Wisewell Model 1") + variant ("Black").
-      • The tab has NO cancellation columns → every row is treated as an
-        active gross sale (is_true_cancel = False, cancelled_at = NaT). Churn
-        for the USA comes from the live "Recharge - USA" tab instead.
-      • Order total is not a recurring price → recurring_price is imputed from
-        US_STRIPE_PRICE (Nano $39.99, Model 1 $69.99).
-      • @wisewell.com internal/test rows are dropped entirely.
-
-    Returns a DataFrame in load_recharge_full's schema so it can be appended
-    directly to the (already-loaded) live USA Recharge rows. MUST NOT raise.
-    """
-    try:
-        raw_data, _errors, _elapsed = _fetch_all_tabs()
-        df = _rows_to_df(raw_data.get(STRIPE_USA_TAB, []))
-        if df.empty:
-            return _empty_usa_flat()
-
-        df.columns = [c.strip() for c in df.columns]
-        cmap = {c.lower(): c for c in df.columns}
-
-        def _col(*cands):
-            for c in cands:
-                if c.lower() in cmap:
-                    return cmap[c.lower()]
-            return None
-
-        order_col   = _col("Order number", "Order #", "order_id")
-        date_col    = _col("Created at", "created_at")
-        email_col   = _col("Customer email", "customer_email", "Email")
-        name_col    = _col("Lineitem name", "product_title", "Product")
-        sku_col     = _col("Lineitem sku", "sku")
-        qty_col     = _col("Lineitem quantity", "quantity")
-
-        if not (date_col and name_col):
-            logger.warning("load_stripe_usa_subscriptions: Stripe - USA missing "
-                           "required columns (date=%s, name=%s)", date_col, name_col)
-            return _empty_usa_flat()
-
-        # Dates: "2026-06-04 14:23:06.964+00" — parse as UTC, drop tz, midnight.
-        created = pd.to_datetime(df[date_col], utc=True, errors="coerce")
-        created = created.dt.tz_localize(None).dt.normalize()
-
-        # Lineitem name → product_title + variant colour.
-        raw_name = df[name_col].astype(str).str.strip()
-        # Colour inside trailing parentheses, e.g. "(Black)".
-        variant = raw_name.str.extract(r"\(([^)]*)\)\s*$", expand=False).fillna("").str.strip()
-        product_title = raw_name.str.replace(r"\s*\([^)]*\)\s*$", "", regex=True).str.strip()
-
-        out = pd.DataFrame(index=df.index)
-        out["subscription_id"]           = ("stripe_" + df[order_col].astype(str).str.strip()
-                                            if order_col else raw_name.index.map(lambda i: f"stripe_{i}"))
-        out["customer_email"]            = df[email_col].astype(str).str.strip() if email_col else ""
-        out["status"]                    = "ACTIVE"
-        out["product_title"]             = product_title
-        out["variant_title"]             = variant
-        out["sku"]                       = df[sku_col].astype(str).str.strip() if sku_col else ""
-        out["recurring_price"]           = product_title.map(US_STRIPE_PRICE).fillna(0.0)
-        out["quantity"]                  = (pd.to_numeric(df[qty_col], errors="coerce")
-                                            .fillna(1).astype(int).clip(lower=1) if qty_col else 1)
-        out["charge_interval_frequency"] = 1.0
-        out["created_at_dt"]             = created.values
-        out["cancelled_at_dt"]           = pd.NaT
-        out["is_true_cancel"]            = False
-        out["cancellation_reason"]       = _REASON_OTHER
-        out["market"]                    = "USA"
-        out["currency"]                  = "USD"
-
-        # Require a parseable created date.
-        out = out[out["created_at_dt"].notna()].copy()
-
-        out = _classify_and_arr(out)
-
-        # ── Drop internal / test rows (@wisewell.com) entirely ────────────
-        email_lc = out["customer_email"].fillna("").astype(str).str.strip().str.lower()
-        is_test = email_lc.str.endswith("@wisewell.com")
-        if is_test.any():
-            logger.info(
-                "load_stripe_usa_subscriptions: dropped %d internal/test rows (%s)",
-                int(is_test.sum()), ", ".join(sorted(email_lc[is_test].unique())[:5]),
-            )
-            out = out[~is_test]
-
-        out = out.reset_index(drop=True)
-        logger.info("load_stripe_usa_subscriptions: %d USA rows from '%s'",
-                    len(out), STRIPE_USA_TAB)
-        return out
-    except Exception as exc:
-        logger.exception("load_stripe_usa_subscriptions: failed (%s)", exc)
-        return _empty_usa_flat()
-
-
 @st.cache_data(ttl=300, show_spinner=False)
 def load_recharge_full() -> pd.DataFrame:
     """
@@ -903,47 +760,11 @@ def load_recharge_full() -> pd.DataFrame:
             df[c] = ""
     df = df[[c for c in keep if c in df.columns]].copy()
 
-    # ── Stripe - USA (historical, additive) ───────────────────────────────
-    # Append the Stripe-era USA orders to the live Recharge - USA rows already
-    # in `df`. These are a distinct historical source (flat export, no price,
-    # no churn) so we ADD them rather than replace anything. WRAPPED in
-    # try/except so any failure here NEVER takes down the dashboard — worst
-    # case the USA simply lacks its Stripe-era backfill.
-    try:
-        stripe_usa = load_stripe_usa_subscriptions()
-        if stripe_usa is None:
-            stripe_usa = _empty_usa_flat()
-        if not stripe_usa.empty:
-            stripe_usa = stripe_usa[[c for c in keep if c in stripe_usa.columns]].copy()
-            df = pd.concat([df, stripe_usa], ignore_index=True)
-
-            # ── Dedup: Recharge wins ──────────────────────────────────────
-            # A customer who ordered in the Stripe era and later appears in
-            # the live Recharge - USA tab would otherwise be double-counted.
-            # For any email present in live Recharge - USA, drop that
-            # customer's Stripe-USA rows entirely (keep the Recharge record,
-            # which has the real status + churn). ~32 such emails as of
-            # 2026-07-27.
-            _usa      = df["market"] == "USA"
-            _stripe   = df["subscription_id"].astype(str).str.startswith("stripe_")
-            _em       = df["customer_email"].fillna("").astype(str).str.lower().str.strip()
-            _rech_ems = set(_em[_usa & ~_stripe]) - {"", "nan"}
-            _dup      = _stripe & _em.isin(_rech_ems)
-            if _dup.any():
-                logger.info(
-                    "load_recharge_full: dedup dropped %d Stripe-USA rows whose "
-                    "email also exists in live Recharge - USA (Recharge wins)",
-                    int(_dup.sum()),
-                )
-                df = df[~_dup].copy()
-
-            logger.info(
-                "load_recharge_full: +%d Stripe-USA rows appended (pre-dedup)", len(stripe_usa),
-            )
-    except Exception as exc:
-        logger.exception(
-            "load_recharge_full: Stripe-USA append crashed (%s) — skipped", exc,
-        )
+    # NOTE: USA data comes from "Recharge - USA" ALONE. The Stripe-era
+    # subscriptions were migrated into Recharge, so they are already in that
+    # tab; "Recharge - USA Seed" (applied above) just restores their true start
+    # date. The old "Stripe - USA" tab is deleted and must NOT be appended —
+    # doing so double-counts those same subscriptions.
 
     return df
 
@@ -1032,7 +853,7 @@ def get_sku_sales(start_dt: pd.Timestamp | None = None) -> pd.DataFrame:
     Unified SKU-level sales for the inventory / supply-chain team.
 
     Combines:
-      • Recharge subscriptions (UAE + KSA + live USA Recharge + Stripe-USA),
+      • Recharge subscriptions (UAE + KSA + live USA Recharge),
         Machine category only
       • Shopify - UAE / KSA ownership rows (parsed from Lineitem sku +
         Lineitem name for variant info)
