@@ -53,20 +53,23 @@ OWNERSHIP_SEED_DT  = pd.Timestamp("2025-08-01")   # Aug-2025 ending = seed month
 RAW_TABS = [
     "Recharge - UAE", "Recharge - KSA", "Recharge - USA",
     "Shopify - UAE",  "Shopify - KSA",  "Shopify - USA",
-    "Offline - Subscriptions", "Offline - Ownership", "Returns",
+    "Offline - Subscriptions", "Offline - Ownership",
     "Paid Ads Spend - Monthly",
-    "Meta Ads Daily - Claude",
-    "Meta Ads Campaign Daily - Claude",
     "Paid Ads Spend - Daily",
-    "Shopify Website - UAE", "Shopify Website - KSA", "Shopify Website - USA",
-    "Sessions by Source - Daily",
-    "Top Landing Pages - Daily",
     "Projections",
     # True start-date override for migrated USA subs (see load_recharge_full)
     "Recharge - USA Seed",
     # Justlife marketplace subscriptions — counted as UAE (see load_recharge_full)
     "Justlife - UAE",
 ]
+# Tabs DELETED from the workbook (2026-08) and therefore no longer fetched:
+#   Returns · Meta Ads Daily - Claude · Meta Ads Campaign Daily - Claude
+#   Shopify Website - UAE/KSA/USA · Sessions by Source - Daily
+#   Top Landing Pages - Daily · Stripe - USA
+# Their loaders remain but fail soft (empty frame) — the behaviour was already
+# identical, since fetching a missing tab returned nothing after 3 retries.
+# NOTE: with "Returns" gone, returned ownership machines are no longer
+# subtracted in get_active_ownership / the ownership aggregation.
 # Historical (hardcoded) tabs — pre-Sep-2025 final truth
 HIST_TABS = ["Monthly Sales", "Monthly Cancellations", "Monthly User Base"]
 

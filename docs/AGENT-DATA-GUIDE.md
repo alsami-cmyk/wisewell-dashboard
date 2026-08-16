@@ -167,20 +167,25 @@ rows as ops deletes them (`applied USA start-date seed to N subs` in the logs).
 The live `Recharge - USA` tab is **never modified** — it self-corrects over time, at which point
 the override becomes a harmless no-op.
 
-### 3.5 ⚠️ Tabs the code fetches that NO LONGER EXIST
+### 3.5 Deleted tabs — datasets that no longer exist
 
-`RAW_TABS` still lists 8 tabs that are absent from the workbook *(as of 2026-08-17)*. Each
-fails with 3 retries on every cold load (`All tabs: 16/24 OK`):
+These tabs were **deleted from the workbook** and removed from `RAW_TABS` on 2026-08-17. Do not
+expect them, and do not re-add them:
 
 ```
-Returns · Meta Ads Daily - Claude · Meta Ads Campaign Daily - Claude
+Returns · Stripe - USA · Meta Ads Daily - Claude · Meta Ads Campaign Daily - Claude
 Shopify Website - UAE / KSA / USA · Sessions by Source - Daily · Top Landing Pages - Daily
 ```
 
-Consequence to be aware of: **`Returns` is missing, so returned ownership machines are no
-longer subtracted** — `load_offline_returns()` silently returns 0 rows. The paid-ads/website
-tabs were migrated elsewhere. Loaders fail soft (empty frame), so nothing crashes — but do not
-assume these datasets are available.
+Their loader functions still exist in `utils.py` but fail soft (empty frame) — behaviour is
+unchanged, since fetching a missing tab already returned nothing. Two are still called and now
+always yield empty: `load_offline_returns()` and `load_sessions_by_source()`.
+
+> **Consequence:** with `Returns` gone, **returned ownership machines are no longer subtracted**
+> from active ownership. The paid-ads / website-analytics data was migrated out of this workbook.
+
+The full source list is now exactly 16 tabs (13 raw + 3 historical) and all 16 fetch
+successfully (`All tabs: 16/16 OK`).
 
 ---
 
