@@ -696,6 +696,35 @@ def load_recharge_full() -> pd.DataFrame:
     df["created_at_dt"]   = _parse_dates(df[ca_col])  if ca_col  else pd.NaT
     df["cancelled_at_dt"] = _parse_dates(df[can_col]) if can_col else pd.NaT
 
+    # ── Reactivated subs: ACTIVE status wins over a stale cancelled_at ─────
+    # Ops sometimes resubscribes a cancelled subscription IN PLACE (e.g. the
+    # April-2026 payment-retry correction, 38 subs). Recharge flips status back
+    # to ACTIVE but leaves the old cancelled_at populated. That is contradictory
+    # data, and it silently distorts two metrics:
+    #   • user base — derived from cancelled_at, so these live customers drop
+    #     out from the stale date onwards (39 machine subs as of 2026-08).
+    #   • churn — any whose reason is not a non-churn bucket registers as a
+    #     phantom cancellation.
+    # An ACTIVE subscription has not been cancelled, so status is authoritative:
+    # clear a cancellation date that is already in the past. A FUTURE-dated
+    # cancellation on an ACTIVE row is left intact — that is a scheduled
+    # end-of-term cancellation, not a contradiction.
+    if "status" in df.columns:
+        _is_active = (
+            df["status"].fillna("").astype(str).str.strip().str.upper().eq("ACTIVE")
+        )
+        _stale_cancel = (
+            _is_active
+            & df["cancelled_at_dt"].notna()
+            & (df["cancelled_at_dt"] <= pd.Timestamp.today().normalize())
+        )
+        if _stale_cancel.any():
+            logger.info(
+                "load_recharge_full: cleared stale cancelled_at on %d ACTIVE "
+                "subscriptions (reactivated in place)", int(_stale_cancel.sum()),
+            )
+            df.loc[_stale_cancel, "cancelled_at_dt"] = pd.NaT
+
     # ── USA true-start-date override (Recharge - USA Seed) ─────────────────
     # Many USA subs were migrated into Recharge in Aug-2026, so Recharge's
     # created_at reflects the MIGRATION date, not the customer's true start
