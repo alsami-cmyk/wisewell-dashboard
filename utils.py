@@ -79,7 +79,7 @@ MAX_RETRIES   = 3
 RETRY_BACKOFF = [1, 2, 4]
 
 # ── Product catalogue ──────────────────────────────────────────────────────────
-PRODUCT_ORDER = ["Model 1", "Nano+", "Bubble", "Flat", "Nano Tank", "Sparkle"]
+PRODUCT_ORDER = ["Model 1", "Nano+", "Bubble", "Flat", "Nano Tank", "Sparkle", "Still"]
 
 PRODUCT_COLOR: dict[str, str] = {
     "Model 1":   "#8b5cf6",
@@ -88,6 +88,7 @@ PRODUCT_COLOR: dict[str, str] = {
     "Flat":      "#10b981",
     "Nano Tank": "#f59e0b",
     "Sparkle":   "#ec4899",
+    "Still":     "#2563eb",
     "Filter":    "#94a3b8",
     "Unknown":   "#cbd5e1",
 }
@@ -130,6 +131,11 @@ SHOPIFY_OWN_COLS = [
     ("Bubble",    "Units - Bubble (Own)"),
     ("Flat",      "Units - Flat (Own)"),
     ("Nano Tank", "Units - Nano (Own)"),
+    # Sparkle / Still have no ownership unit column in the sheet yet;
+    # load_shopify_ownership skips absent columns, so these are inert
+    # until ops adds them.
+    ("Sparkle",   "Units - Sparkle (Own)"),
+    ("Still",     "Units - Still (Own)"),
 ]
 
 # ── Cancellation reason taxonomy (2026-07 consolidation) ──────────────────────
@@ -493,6 +499,11 @@ def _classify_recharge_product(title: str) -> tuple[str | None, str | None]:
     # Subscription" in both the US and UAE, so one regex covers both.
     if re.search(r"sparkle.*subscription", tl) and "filter" not in tl:
         return "Machine", "Sparkle"
+    # Still — new product (2026-08). Sold in the UAE and US as
+    # "Wisewell Still Subscription". \b anchors are required: an unanchored
+    # "still" also matches words like "distilled".
+    if re.search(r"\bstill\b.*subscription", tl) and "filter" not in tl:
+        return "Machine", "Still"
     # Nano Tank:
     #   UAE uses "Wisewell Nano Subscription", USA uses "Wisewell Nano" (no suffix).
     #   Both are subscription products and map to Nano Tank.
@@ -525,6 +536,8 @@ def _classify_offline_product(lineitem: str) -> str | None:
         return "Flat"
     if "sparkle" in tl and "filter" not in tl:
         return "Sparkle"
+    if re.search(r"\bstill\b", tl) and "filter" not in tl:
+        return "Still"
     return None
 
 

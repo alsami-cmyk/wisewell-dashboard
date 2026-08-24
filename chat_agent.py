@@ -52,7 +52,7 @@ MODEL_ID = "claude-sonnet-4-5-20250929"
 INPUT_USD_PER_MTOK   = 3.00
 OUTPUT_USD_PER_MTOK  = 15.00
 
-PRODUCTS = ["Model 1", "Nano+", "Bubble", "Flat", "Nano Tank", "Sparkle"]
+PRODUCTS = ["Model 1", "Nano+", "Bubble", "Flat", "Nano Tank", "Sparkle", "Still"]
 MARKETS  = ["UAE", "KSA", "USA"]
 
 
@@ -491,7 +491,7 @@ provided.
 Wisewell sells water filtration machines and recurring filter subscriptions.
 
 - Markets: UAE, KSA, USA
-- Machine products: Model 1, Nano+, Bubble, Flat, Nano Tank, Sparkle
+- Machine products: Model 1, Nano+, Bubble, Flat, Nano Tank, Sparkle, Still
 - Two revenue models per machine: Subscription (recurring) and Ownership (one-time)
 - Filter subs renew monthly/quarterly per machine
 - Today's date is {date.today().isoformat()}
