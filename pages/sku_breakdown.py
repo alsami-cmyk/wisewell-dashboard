@@ -25,8 +25,15 @@ from utils import (
     SHARED_CSS,
     fmt_usd,
     get_sku_sales,
-    style_fig,
 )
+
+# Imported from its own module so a cached/stale utils cannot break the page;
+# the fallback keeps charts rendering (unstyled) if even that import fails.
+try:
+    from chart_theme import style_fig
+except Exception:  # pragma: no cover
+    def style_fig(fig, theme=None):
+        return fig
 
 st.markdown(SHARED_CSS, unsafe_allow_html=True)
 st.markdown("## 📦 SKU Breakdown")

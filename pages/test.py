@@ -25,8 +25,15 @@ from utils import (
     get_all_machine_sales,
     get_fx,
     load_recharge_full,
-    style_fig,
 )
+
+# Imported from its own module so a cached/stale utils cannot break the page;
+# the fallback keeps charts rendering (unstyled) if even that import fails.
+try:
+    from chart_theme import style_fig
+except Exception:  # pragma: no cover
+    def style_fig(fig, theme=None):
+        return fig
 
 # ── Page header ───────────────────────────────────────────────────────────────
 st.markdown("## 📊 Sales Overview")

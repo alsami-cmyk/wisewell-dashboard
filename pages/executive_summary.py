@@ -33,8 +33,15 @@ from utils import (
     load_marketing_spend_daily,
     load_projections,
     load_recharge_full,
-    style_fig,
 )
+
+# Imported from its own module so a cached/stale utils cannot break the page;
+# the fallback keeps charts rendering (unstyled) if even that import fails.
+try:
+    from chart_theme import style_fig
+except Exception:  # pragma: no cover
+    def style_fig(fig, theme=None):
+        return fig
 
 st.markdown("## 🎯 Executive summary")
 
