@@ -18,6 +18,7 @@ from utils import (
     PRODUCT_ORDER,
     get_active_subscriptions,
     load_recharge_full,
+    style_fig,
 )
 
 # ── Page header ───────────────────────────────────────────────────────────────
@@ -383,7 +384,7 @@ fig_rate.update_layout(
     yaxis=dict(gridcolor="rgba(148,163,184,0.15)", zeroline=False, tickformat=y_fmt),
     showlegend=False,
 )
-st.plotly_chart(fig_rate, use_container_width=True)
+st.plotly_chart(style_fig(fig_rate), use_container_width=True)
 
 
 # ── Chart 2: Cancellation reasons, stacked by product ─────────────────────────
@@ -485,7 +486,7 @@ else:
         legend=dict(orientation="h", yanchor="top", y=1.12, xanchor="right", x=1),
         annotations=annotations,
     )
-    st.plotly_chart(fig_reasons, use_container_width=True)
+    st.plotly_chart(style_fig(fig_reasons), use_container_width=True)
 
 
 # ── Chart 3: Lifetime at cancellation (histogram) ─────────────────────────────
@@ -535,7 +536,7 @@ else:
         yaxis=dict(gridcolor="rgba(148,163,184,0.15)", zeroline=False),
         showlegend=False,
     )
-    st.plotly_chart(fig_lt, use_container_width=True)
+    st.plotly_chart(style_fig(fig_lt), use_container_width=True)
 
 
 # ── Footnote ──────────────────────────────────────────────────────────────────

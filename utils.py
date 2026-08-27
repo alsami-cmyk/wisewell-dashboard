@@ -349,6 +349,74 @@ section[data-testid="stSidebar"] hr { border-color: #1e3a5f !important; }
 </style>
 """
 
+# ── Plotly theming ────────────────────────────────────────────────────────────
+# SINGLE source of truth for chart colours. Call it explicitly on every figure:
+#
+#     st.plotly_chart(style_fig(fig), use_container_width=True)
+#
+# This replaces an earlier monkeypatch of st.plotly_chart in dashboard.py.
+# That patch re-wrapped itself on every Streamlit rerun and eventually raised
+# RecursionError, because dashboard.py re-executes while the streamlit module
+# persists for the life of the process. Explicit per-figure styling has no
+# global state, so the failure mode cannot recur.
+#
+# Deliberately conservative: it sets only theme-dependent DEFAULTS
+# (backgrounds, base font colour, gridlines) and retunes annotation text that
+# was authored for a dark canvas. It never touches trace colours, marker
+# colours or bar/marker text — those encode data, or sit on coloured fills, and
+# must survive a theme switch untouched. Per-axis title colours are likewise
+# left alone so intentional accents (e.g. a green ARR axis) are preserved.
+CHART_THEME: dict[str, dict[str, str]] = {
+    "dark":  {"ink": "#e2e8f0", "muted": "#94a3b8",
+              "grid": "rgba(148,163,184,0.15)", "bg": "rgba(0,0,0,0)"},
+    "light": {"ink": "#1e293b", "muted": "#475569",
+              "grid": "rgba(71,85,105,0.18)",  "bg": "rgba(0,0,0,0)"},
+}
+
+# Text colours authored for the dark canvas; flipped to dark ink in light mode.
+_DARK_CANVAS_TEXT = {
+    "#e2e8f0", "#cbd5e1", "#94a3b8", "#f1f5f9", "#e5e7eb", "#f8fafc",
+    "#cbd5f5", "#e2e5f0", "#ffffff", "white",
+}
+
+
+def active_theme() -> str:
+    """'light' or 'dark' — the viewer's current dashboard theme."""
+    try:
+        return "light" if st.session_state.get("ui_theme") == "light" else "dark"
+    except Exception:
+        return "dark"
+
+
+def style_fig(fig, theme: str | None = None):
+    """Apply the active dashboard theme to a Plotly figure. Returns the figure.
+
+    Safe to call on any figure, including None. Never raises: a styling
+    failure must not take down a page.
+    """
+    if fig is None:
+        return fig
+    t = CHART_THEME.get(theme or active_theme(), CHART_THEME["dark"])
+    try:
+        fig.update_layout(
+            paper_bgcolor=t["bg"],
+            plot_bgcolor=t["bg"],
+            font_color=t["ink"],
+            legend_font_color=t["muted"],
+        )
+        fig.update_xaxes(gridcolor=t["grid"], tickfont_color=t["muted"], zeroline=False)
+        fig.update_yaxes(gridcolor=t["grid"], tickfont_color=t["muted"], zeroline=False)
+        # Annotations written for a dark background need flipping in light mode.
+        for ann in (getattr(fig.layout, "annotations", None) or ()):
+            fnt = getattr(ann, "font", None)
+            col = getattr(fnt, "color", None)
+            if isinstance(col, str) and col.strip().lower() in _DARK_CANVAS_TEXT:
+                ann.font.color = t["ink"]
+    except Exception:
+        logger.exception("style_fig: failed to theme a figure (continuing unstyled)")
+    return fig
+
+
 # ── Credential helpers ────────────────────────────────────────────────────────
 def get_credentials():
     """Service account (Streamlit Cloud) or OAuth token.json (local dev)."""

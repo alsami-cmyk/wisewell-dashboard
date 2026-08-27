@@ -25,6 +25,7 @@ from utils import (
     get_all_machine_sales,
     get_fx,
     load_recharge_full,
+    style_fig,
 )
 
 # ── Page header ───────────────────────────────────────────────────────────────
@@ -345,7 +346,7 @@ fig_sales.update_layout(
     yaxis=dict(gridcolor="rgba(148,163,184,0.15)", zeroline=False),
     showlegend=False,
 )
-st.plotly_chart(fig_sales, use_container_width=True)
+st.plotly_chart(style_fig(fig_sales), use_container_width=True)
 
 # ── Chart 2: User base over time (line) ───────────────────────────────────────
 base_values = []
@@ -387,7 +388,7 @@ fig_base.update_layout(
     yaxis=dict(gridcolor="rgba(148,163,184,0.15)", zeroline=False),
     showlegend=False,
 )
-st.plotly_chart(fig_base, use_container_width=True)
+st.plotly_chart(style_fig(fig_base), use_container_width=True)
 
 # ── Chart 3: ARR over time (line) ─────────────────────────────────────────────
 arr_values = [_point_in_time_arr_usd(ts) for ts in bucket_dates]
@@ -437,7 +438,7 @@ fig_arr.update_layout(
     ),
     showlegend=False,
 )
-st.plotly_chart(fig_arr, use_container_width=True)
+st.plotly_chart(style_fig(fig_arr), use_container_width=True)
 
 # ── Footnote ──────────────────────────────────────────────────────────────────
 st.caption(

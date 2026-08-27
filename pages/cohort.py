@@ -17,7 +17,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from utils import PRODUCT_ORDER, load_recharge_full
+from utils import PRODUCT_ORDER, load_recharge_full, style_fig
 
 # ── Page header ───────────────────────────────────────────────────────────────
 st.markdown("## 📈 Cohort analysis")
@@ -250,7 +250,7 @@ fig_heat.update_layout(
     xaxis=dict(side="top", showgrid=False),
     yaxis=dict(showgrid=False, autorange="reversed"),
 )
-st.plotly_chart(fig_heat, use_container_width=True)
+st.plotly_chart(style_fig(fig_heat), use_container_width=True)
 
 # ── Cohort size reference table ───────────────────────────────────────────────
 with st.expander("Cohort sizes", expanded=False):
@@ -302,7 +302,7 @@ fig_avg.update_layout(
     ),
     showlegend=False,
 )
-st.plotly_chart(fig_avg, use_container_width=True)
+st.plotly_chart(style_fig(fig_avg), use_container_width=True)
 
 # ── Footnote ──────────────────────────────────────────────────────────────────
 st.caption(

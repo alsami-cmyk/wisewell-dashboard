@@ -25,6 +25,7 @@ from utils import (
     SHARED_CSS,
     fmt_usd,
     get_sku_sales,
+    style_fig,
 )
 
 st.markdown(SHARED_CSS, unsafe_allow_html=True)
@@ -179,7 +180,7 @@ fig.update_layout(
                title="Units"),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
 )
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(style_fig(fig), use_container_width=True)
 
 # ── Chart 2 (optional): Monthly trend by colour ──────────────────────────────
 with st.expander("📈 Monthly trend by colour"):
@@ -208,7 +209,7 @@ with st.expander("📈 Monthly trend by colour"):
         yaxis=dict(gridcolor="rgba(148,163,184,0.15)", zeroline=False, title="Units"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(style_fig(fig2), use_container_width=True)
 
 # ── Table: SKU-level breakdown ───────────────────────────────────────────────
 st.markdown("### SKU-level breakdown")

@@ -33,6 +33,7 @@ from utils import (
     load_marketing_spend_daily,
     load_projections,
     load_recharge_full,
+    style_fig,
 )
 
 st.markdown("## 🎯 Executive summary")
@@ -974,7 +975,7 @@ with eL:
         yaxis=dict(gridcolor="rgba(148,163,184,0.15)", zeroline=False),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
-    st.plotly_chart(fig_t7, use_container_width=True)
+    st.plotly_chart(style_fig(fig_t7), use_container_width=True)
 
 with eR:
     def _t7_avg_sales(m): return _new_sales_markets(t7_start, t7_end, m) / 7
@@ -1128,7 +1129,7 @@ fig_growth.update_layout(
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     barmode="overlay",
 )
-st.plotly_chart(fig_growth, use_container_width=True)
+st.plotly_chart(style_fig(fig_growth), use_container_width=True)
 
 # ── Efficiency: CAC and Churn Rate ────────────────────────────────────────────
 st.markdown("### Efficiency: CAC and Churn Rate")
@@ -1228,7 +1229,7 @@ fig_eff.update_yaxes(
 for ann in fig_eff.layout.annotations:
     ann.font.color = "#94a3b8"
     ann.font.size  = 12
-st.plotly_chart(fig_eff, use_container_width=True)
+st.plotly_chart(style_fig(fig_eff), use_container_width=True)
 
 
 # ── Row 3: Sales (daily bars) + Sales by product (donut) ─────────────────────
@@ -1289,7 +1290,7 @@ with left_col:
         yaxis=dict(gridcolor="rgba(148,163,184,0.15)", zeroline=False),
         showlegend=False,
     )
-    st.plotly_chart(fig_bar, use_container_width=True)
+    st.plotly_chart(style_fig(fig_bar), use_container_width=True)
 
 with right_col:
     st.markdown("### Sales by product")
@@ -1341,7 +1342,7 @@ with right_col:
             margin=dict(l=10, r=10, t=20, b=10),
             showlegend=False,
         )
-        st.plotly_chart(fig_donut, use_container_width=True)
+        st.plotly_chart(style_fig(fig_donut), use_container_width=True)
 
 # ── Footnote ──────────────────────────────────────────────────────────────────
 st.caption(f"Country: **{country_sel}** · Machine-subscription scope · ARR includes Filter subs.")
