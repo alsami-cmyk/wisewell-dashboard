@@ -330,19 +330,26 @@ def _relight_fig(fig) -> None:
         pass
 
 
-_orig_plotly_chart = st.plotly_chart
+# Patch EXACTLY ONCE. dashboard.py re-executes top-to-bottom on every
+# Streamlit rerun, but `st` is imported once per process, so the patched
+# function persists on the module between runs. Without a guard, each rerun
+# captured the already-patched function as "_orig" and wrapped it again — the
+# chain grew by one wrapper per rerun until it blew the stack
+# (RecursionError: _themed_plotly_chart repeated ~980 times). The sentinel
+# makes every re-execution after the first a no-op.
+if not getattr(st.plotly_chart, "_wisewell_themed", False):
+    _orig_plotly_chart = st.plotly_chart
 
+    def _themed_plotly_chart(fig, *a, **kw):
+        if st.session_state.get("ui_theme") == "light":
+            try:
+                _relight_fig(fig)
+            except Exception:
+                pass
+        return _orig_plotly_chart(fig, *a, **kw)
 
-def _themed_plotly_chart(fig, *a, **kw):
-    if st.session_state.get("ui_theme") == "light":
-        try:
-            _relight_fig(fig)
-        except Exception:
-            pass
-    return _orig_plotly_chart(fig, *a, **kw)
-
-
-st.plotly_chart = _themed_plotly_chart
+    _themed_plotly_chart._wisewell_themed = True
+    st.plotly_chart = _themed_plotly_chart
 
 # ── Page router ───────────────────────────────────────────────────────────────
 pg = st.navigation([
