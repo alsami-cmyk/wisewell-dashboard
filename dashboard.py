@@ -8,6 +8,11 @@ Renders the shared sidebar and routes to pages.
 # the page with `KeyError: 'utils'`. Module freshness on redeploys is handled
 # by Streamlit Cloud restarting the process — the pop was never necessary.
 
+import hashlib
+import hmac
+import time
+from datetime import datetime, timedelta
+
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
@@ -26,10 +31,68 @@ if st.query_params.get("health"):
     st.write("OK")
     st.stop()
 
-# ── Password gate ─────────────────────────────────────────────────────────────
-# Set DASHBOARD_PASSWORD in Streamlit secrets to enable. If unset, dashboard
-# is open (useful for local dev). If set, every visitor must enter the password
-# once per session.
+# ── Password gate (with persistent "remember me" cookie) ──────────────────────
+# Set DASHBOARD_PASSWORD in Streamlit secrets to enable. If unset, the dashboard
+# is open (useful for local dev).
+#
+# st.session_state alone is per-websocket-session, so it was lost on a refresh, a
+# new tab, or an app reboot — which meant re-entering the password constantly.
+# On success we now also store a SIGNED token in a browser cookie, so a returning
+# visitor is recognised for AUTH_COOKIE_DAYS without being prompted again.
+#
+# The cookie holds "<expiry>.<hmac>", never the password itself, and is signed
+# with AUTH_COOKIE_SECRET (falling back to the password, so ROTATING THE PASSWORD
+# INVALIDATES every outstanding cookie). A tampered or expired token fails
+# verification and the visitor simply sees the form again.
+#
+# Everything cookie-related is wrapped defensively: if the component is missing or
+# misbehaves we fall back to the old session-only behaviour. An auth gate must
+# degrade to "ask for the password" — never to a crash, and never to an open door.
+AUTH_COOKIE_NAME = "ww_auth"
+AUTH_COOKIE_DAYS = 30
+
+
+def _auth_secret() -> str:
+    """Key used to sign the remember-me token."""
+    for key in ("AUTH_COOKIE_SECRET", "DASHBOARD_PASSWORD"):
+        try:
+            val = st.secrets[key]
+            if val:
+                return str(val)
+        except Exception:
+            continue
+    return ""
+
+
+def _make_auth_token(days: int = AUTH_COOKIE_DAYS) -> str:
+    exp = str(int(time.time()) + days * 86400)
+    sig = hmac.new(_auth_secret().encode(), exp.encode(), hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}"
+
+
+def _auth_token_valid(token) -> bool:
+    secret = _auth_secret()
+    if not secret or not token:
+        return False
+    try:
+        exp_str, sig = str(token).split(".", 1)
+        if int(exp_str) < time.time():
+            return False           # expired
+    except Exception:
+        return False               # malformed
+    expected = hmac.new(secret.encode(), exp_str.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected)
+
+
+def _cookie_jar():
+    """CookieManager, or None if the component is unavailable."""
+    try:
+        import extra_streamlit_components as stx
+        return stx.CookieManager(key="ww_cookie_manager")
+    except Exception:
+        return None
+
+
 def _require_password() -> None:
     try:
         expected = st.secrets["DASHBOARD_PASSWORD"]
@@ -38,6 +101,28 @@ def _require_password() -> None:
 
     if st.session_state.get("auth_ok"):
         return
+
+    jar = _cookie_jar()
+
+    # The cookie component needs one round-trip before it can report anything.
+    # Without this probe the login form would flash on every first load even for a
+    # remembered visitor. The session flag makes it happen at most once.
+    if jar is not None and not st.session_state.get("_auth_cookie_probed"):
+        st.session_state["_auth_cookie_probed"] = True
+        try:
+            jar.get_all()
+            st.rerun()
+        except Exception:
+            pass
+
+    # Already remembered from a previous visit?
+    if jar is not None:
+        try:
+            if _auth_token_valid(jar.get(AUTH_COOKIE_NAME)):
+                st.session_state["auth_ok"] = True
+                return
+        except Exception:
+            pass
 
     # Render a centered login form
     _, c, _ = st.columns([1, 1.2, 1])
@@ -53,14 +138,37 @@ def _require_password() -> None:
         with st.form("login_form", clear_on_submit=False):
             pw = st.text_input("Password", type="password", label_visibility="collapsed",
                                placeholder="Password")
+            remember = st.checkbox(f"Keep me signed in for {AUTH_COOKIE_DAYS} days", value=True)
             ok = st.form_submit_button("Sign in", use_container_width=True, type="primary")
         if ok:
             if pw == expected:
                 st.session_state["auth_ok"] = True
+                if remember and jar is not None:
+                    try:
+                        jar.set(
+                            AUTH_COOKIE_NAME,
+                            _make_auth_token(),
+                            expires_at=datetime.now() + timedelta(days=AUTH_COOKIE_DAYS),
+                            key="ww_auth_set",
+                        )
+                    except Exception:
+                        pass  # remembering is best-effort; the sign-in still worked
                 st.rerun()
             else:
                 st.error("Incorrect password.")
     st.stop()
+
+
+def _sign_out() -> None:
+    """Clear the session and forget the remember-me cookie."""
+    st.session_state["auth_ok"] = False
+    jar = _cookie_jar()
+    if jar is not None:
+        try:
+            jar.delete(AUTH_COOKIE_NAME, key="ww_auth_del")
+        except Exception:
+            pass
+    st.rerun()
 
 
 _require_password()
@@ -222,6 +330,12 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
     st.caption("Auto-refreshes every 5 min")
+
+    # Only meaningful when the password gate is active; with a remember-me
+    # cookie in play there has to be a way to deliberately forget this browser.
+    if st.session_state.get("auth_ok"):
+        if st.button("🔓 Sign out", use_container_width=True, key="s_signout"):
+            _sign_out()
 
 # ── Dark / light theme ────────────────────────────────────────────────────────
 # One central toggle. dashboard.py runs on every page load (the pages render

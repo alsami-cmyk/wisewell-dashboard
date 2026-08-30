@@ -1,5 +1,6 @@
 streamlit==1.50.0
 streamlit-autorefresh==1.0.1
+extra-streamlit-components==0.1.81
 plotly==6.6.0
 google-api-python-client==2.193.0
 google-auth==2.49.1
