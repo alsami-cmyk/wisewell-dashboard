@@ -50,6 +50,12 @@ if st.query_params.get("health"):
 # degrade to "ask for the password" — never to a crash, and never to an open door.
 AUTH_COOKIE_NAME = "ww_auth"
 AUTH_COOKIE_DAYS = 30
+# The same signed token is ALSO carried in the URL. Cookies set by a Streamlit
+# component live in a sandboxed iframe, and browsers now block third-party
+# cookies by default, so the cookie alone could not be relied on. Query params
+# are handled server-side by Streamlit and cannot be blocked, which makes this
+# the mechanism that actually keeps a visitor signed in.
+AUTH_QS_KEY = "k"
 
 
 def _auth_secret() -> str:
@@ -99,7 +105,20 @@ def _require_password() -> None:
     except (KeyError, FileNotFoundError):
         return  # no password configured → skip gate
 
+    # Signed token in the URL — survives refresh, new tab, bookmark and reboot.
+    try:
+        if _auth_token_valid(st.query_params.get(AUTH_QS_KEY)):
+            st.session_state["auth_ok"] = True
+    except Exception:
+        pass
+
     if st.session_state.get("auth_ok"):
+        # Re-assert the token so switching pages never drops it from the URL.
+        try:
+            if not _auth_token_valid(st.query_params.get(AUTH_QS_KEY)):
+                st.query_params[AUTH_QS_KEY] = _make_auth_token()
+        except Exception:
+            pass
         return
 
     jar = _cookie_jar()
@@ -143,16 +162,25 @@ def _require_password() -> None:
         if ok:
             if pw == expected:
                 st.session_state["auth_ok"] = True
-                if remember and jar is not None:
+                token = _make_auth_token()
+                if remember:
+                    # URL token: the reliable path.
                     try:
-                        jar.set(
-                            AUTH_COOKIE_NAME,
-                            _make_auth_token(),
-                            expires_at=datetime.now() + timedelta(days=AUTH_COOKIE_DAYS),
-                            key="ww_auth_set",
-                        )
+                        st.query_params[AUTH_QS_KEY] = token
                     except Exception:
-                        pass  # remembering is best-effort; the sign-in still worked
+                        pass
+                    # Cookie: a bonus when the browser allows it. Set it BEFORE
+                    # any rerun — an immediate rerun can abort the component's
+                    # write round-trip, which is why the cookie alone failed.
+                    if jar is not None:
+                        try:
+                            jar.set(
+                                AUTH_COOKIE_NAME, token,
+                                expires_at=datetime.now() + timedelta(days=AUTH_COOKIE_DAYS),
+                                key="ww_auth_set",
+                            )
+                        except Exception:
+                            pass
                 st.rerun()
             else:
                 st.error("Incorrect password.")
@@ -162,6 +190,11 @@ def _require_password() -> None:
 def _sign_out() -> None:
     """Clear the session and forget the remember-me cookie."""
     st.session_state["auth_ok"] = False
+    try:
+        if AUTH_QS_KEY in st.query_params:
+            del st.query_params[AUTH_QS_KEY]
+    except Exception:
+        pass
     jar = _cookie_jar()
     if jar is not None:
         try:
