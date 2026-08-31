@@ -1140,6 +1140,22 @@ st.plotly_chart(style_fig(fig_growth), use_container_width=True)
 
 # ── Efficiency: CAC and Churn Rate ────────────────────────────────────────────
 st.markdown("### Efficiency: CAC and Churn Rate")
+
+# CAC is meaningless without the paid-ads spend feed. Both "Paid Ads Spend"
+# tabs are IMPORTRANGE formulas pointing at another workbook, so they can go
+# empty without anything in this repo changing. Say so loudly rather than
+# rendering $0 bars that look like a real (free) acquisition cost.
+_spend_daily_chk = load_marketing_spend_daily()
+_spend_mon_chk   = load_marketing_spend()
+if ((_spend_daily_chk is None or _spend_daily_chk.empty)
+        and (_spend_mon_chk is None or _spend_mon_chk.empty)):
+    st.warning(
+        "No paid-ads spend data available, so CAC cannot be calculated and is "
+        "shown blank. Check the **Paid Ads Spend - Daily / Monthly** tabs in the "
+        "User Base Data sheet \u2014 both are IMPORTRANGE formulas and will be empty "
+        "if the source workbook is unreachable.",
+        icon="\u26a0\ufe0f",
+    )
 st.caption(
     "The current (incomplete) month's churn rate is **projected** to a full-month "
     "pace (MTD churns × days-in-month ÷ days-elapsed) so the trend stays comparable "
@@ -1155,7 +1171,13 @@ for i, (ms, mp) in enumerate(zip(month_starts, measure_points)):
     # CAC denominator excludes offline (B2B / direct) deals
     paid_sales_mo = _paid_sales_in(ms_ts, mp_ts)
     spend_mo      = _marketing_spend_in(ms_ts, mp_ts)
-    cac_series.append(spend_mo / paid_sales_mo if paid_sales_mo > 0 else None)
+    # None (a gap in the chart), NOT 0, when either side is missing. Dividing an
+    # absent spend figure by real unit sales yields a confident-looking "$0" that
+    # actually means "no spend data" — exactly the kind of silent zero that gets
+    # mistaken for a real CAC. Guard on BOTH sides.
+    cac_series.append(
+        spend_mo / paid_sales_mo if (paid_sales_mo > 0 and spend_mo > 0) else None
+    )
 
     churned_mo      = _churned_in(ms_ts, mp_ts)
     active_subs_mo  = _active_machine_subs_at(ms_ts)
