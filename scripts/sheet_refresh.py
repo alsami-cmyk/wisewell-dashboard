@@ -7,6 +7,7 @@ Tracks resolved customers daily and logs them to the ✅ Resolved tab.
 
 import json
 import os
+import re
 import time
 import requests
 import urllib.parse
@@ -274,7 +275,11 @@ def sheets_put(creds, range_name, values):
         json={"values": values},
     )
     if not resp.ok:
-        print(f"  [sheets_put] ERROR on '{range_name}': {resp.status_code} {resp.text[:300]}", flush=True)
+        # Raise rather than print: a swallowed write here silently drops data while the
+        # job still reports success. Fail the run loudly so the breakage is visible.
+        raise RuntimeError(
+            f"[sheets_put] write to '{range_name}' failed: {resp.status_code} {resp.text[:300]}"
+        )
 
 
 def sheets_append(creds, range_name, values):
@@ -287,11 +292,11 @@ def sheets_append(creds, range_name, values):
     )
     if not resp.ok:
         print(f"  [sheets_append] ERROR on '{range_name}': {resp.status_code} {resp.text[:300]}", flush=True)
-        return False
+        return None
     body = resp.json()
     updated = body.get("updates", {}).get("updatedRange", "?")
     print(f"  [sheets_append] OK → {updated}", flush=True)
-    return True
+    return updated
 
 
 def get_crm_map(creds, tab_name):
@@ -452,9 +457,60 @@ def save_current_customers(results):
 
 
 def get_activity_log_emails(creds):
-    """Return set of emails that appear anywhere in the Activity Log (col C)."""
-    rows = sheets_get(creds, "📞 Activity Log!C3:C2000")
-    return {row[0].strip().lower() for row in rows if row and row[0].strip()}
+    """Every email an analyst has logged a contact against (col C of BOTH logs).
+
+    Escalation Cases counts too — it is worked by the escalation analysts, so a
+    customer they contacted must not be filed as auto-recovery.
+    """
+    emails = set()
+    for tab in ("📞 Activity Log", "🔴 Escalation Cases"):
+        rows = sheets_get(creds, f"{tab}!C3:C2000")
+        emails |= {row[0].strip().lower() for row in rows if row and row[0].strip()}
+    return emails
+
+
+def get_prior_resolution_counts(creds):
+    """email → how many times it has ALREADY been logged as resolved.
+
+    A customer whose card fails every billing cycle auto-recovers and re-enters the
+    book each month; without this the tab counts each pass as a fresh recovery and
+    credits the full debt again.
+    """
+    rows = sheets_get(creds, "✅ Resolved!B2:B20000")
+    counts = {}
+    for row in rows:
+        if row and row[0].strip():
+            e = row[0].strip().lower()
+            counts[e] = counts.get(e, 0) + 1
+    return counts
+
+
+def classify_outcome(email):
+    """Did this customer resume paying, or did the subscription get cancelled?
+
+    'Left the book' conflates two opposite outcomes. Ask Recharge which it was.
+    Returns one of: Resumed Payment | Cancelled — Churned | Left Book — Unknown
+    """
+    try:
+        cust = rc_get(f"https://api.rechargeapps.com/customers?email={urllib.parse.quote(email)}")
+        cs = cust.get("customers", [])
+        if not cs:
+            return "Left Book — Unknown"
+        subs = rc_get(
+            f"https://api.rechargeapps.com/subscriptions?customer_id={cs[0]['id']}&limit=100"
+        ).get("subscriptions", [])
+        if not subs:
+            return "Left Book — Unknown"
+        active = sum(1 for x in subs if (x.get("status") or "").lower() == "active")
+        cancelled = sum(1 for x in subs if (x.get("status") or "").lower() == "cancelled")
+        if active:
+            return "Resumed Payment"
+        if cancelled:
+            return "Cancelled — Churned"
+        return "Left Book — Unknown"
+    except Exception as exc:
+        print(f"  [classify_outcome] {email}: {exc}", flush=True)
+        return "Left Book — Unknown"
 
 
 def get_last_activity_date(creds, email):
@@ -465,7 +521,13 @@ def get_last_activity_date(creds, email):
 
 
 def log_resolved_customers(creds, prev_customers, current_emails, activity_emails, today_str):
-    """Find customers who left the funnel today and append them to ✅ Resolved."""
+    """Log customers who left the funnel today, and say honestly what happened.
+
+    Three things this records that the original did not:
+      * Resolution Type  — Resumed Payment vs Cancelled — Churned (opposite outcomes)
+      * Driver           — Analyst-Driven vs Auto-Recovery (who caused it)
+      * Occurrence/Class — first-time vs a repeat of a customer already counted
+    """
     resolved = [
         (email, data)
         for email, data in prev_customers.items()
@@ -473,47 +535,82 @@ def log_resolved_customers(creds, prev_customers, current_emails, activity_email
     ]
 
     if not resolved:
-        print(f"  No resolved customers today")
+        print("  No resolved customers today")
         return 0
 
-    print(f"  {len(resolved)} customers resolved — logging...")
+    print(f"  {len(resolved)} customers resolved — logging...", flush=True)
 
-    # Find next empty row in Resolved tab
-    existing = sheets_get(creds, "✅ Resolved!A:A")
-    next_row = len(existing) + 1
+    prior = get_prior_resolution_counts(creds)
 
     rows_to_write = []
+    summary = {"Resumed Payment": 0, "Cancelled — Churned": 0, "Left Book — Unknown": 0}
     for email, d in resolved:
-        contacted = email.lower() in activity_emails
-        res_type  = "Analyst-Driven" if contacted else "Auto-Recovery / Cancelled"
-        days_in   = d.get("days_since", "")
-
+        e = email.lower()
+        driver     = "Analyst-Driven" if e in activity_emails else "Auto-Recovery"
+        outcome    = classify_outcome(email)
+        summary[outcome] = summary.get(outcome, 0) + 1
+        occurrence = prior.get(e, 0) + 1
+        prior[e]   = occurrence          # a customer can resolve twice in one run
+        if occurrence == 1:
+            res_class = "First-time"
+        elif occurrence < 3:
+            res_class = "Repeat"
+        else:
+            res_class = "Chronic revolver"
         rows_to_write.append([
             today_str,
             email,
             d.get("full_name", ""),
             d.get("product", ""),
             str(int(d.get("est_debt", 0))),
-            str(days_in),
+            str(d.get("days_since", "")),
             str(d.get("succ_cycles", "")),
             d.get("stage", ""),
-            res_type,
+            outcome,
             d.get("earliest", ""),
-            "",   # Last Analyst Activity — filled by formula below
+            "",              # K — Last Analyst Activity, formula written below
+            driver,          # L
+            str(occurrence), # M
+            res_class,       # N
         ])
 
-    if rows_to_write:
-        sheets_put(creds, f"✅ Resolved!A{next_row}", rows_to_write)
-        # Add MAXIFS formula in col K for last activity date per email
-        for i, (email, _) in enumerate(resolved):
-            row = next_row + i
-            formula = (
-                f'=IFERROR(TEXT(MAXIFS(\'📞 Activity Log\'!$A:$A,'
-                f'\'📞 Activity Log\'!$C:$C,B{row}),\"YYYY-MM-DD\"),\"\")'
-            )
-            sheets_put(creds, f"✅ Resolved!K{row}", [[formula]])
+    # Append rather than computing the next row and PUTting into it: the tab's grid
+    # has a fixed row count, and a PUT past the last row fails. INSERT_ROWS grows
+    # the grid instead, so this keeps working once the tab fills up.
+    updated = sheets_append(creds, "✅ Resolved!A:N", rows_to_write)
+    if not updated:
+        raise RuntimeError(
+            f"[resolved] failed to append {len(rows_to_write)} resolved customers — "
+            "these would be lost, since tomorrow's baseline no longer contains them"
+        )
 
-    print(f"  Logged {len(rows_to_write)} resolved customers (row {next_row}+)")
+    # Backfill col K in one write, using the rows the append actually landed on.
+    m = re.search(r"![A-Z]+(\d+)(?::|$)", updated)
+    if m:
+        first_row = int(m.group(1))
+        formulas = [
+            [
+                # MAXIFS returns 0 (not an error) when the customer was never logged,
+                # which TEXT would render as "1899-12-30" — so blank it explicitly.
+                f"=IFERROR(LET(d,MAXIFS('📞 Activity Log'!$A:$A,"
+                f"'📞 Activity Log'!$C:$C,B{first_row + i}),"
+                f"IF(d=0,\"\",TEXT(d,\"YYYY-MM-DD\"))),\"\")"
+            ]
+            for i in range(len(rows_to_write))
+        ]
+        sheets_put(creds, f"✅ Resolved!K{first_row}", formulas)
+
+    firsts = sum(1 for r in rows_to_write if r[13] == "First-time")
+    chronic = sum(1 for r in rows_to_write if r[13] == "Chronic revolver")
+    print(
+        f"  Logged {len(rows_to_write)}: {firsts} first-time, "
+        f"{len(rows_to_write)-firsts} repeat (of which {chronic} chronic)", flush=True
+    )
+    print(
+        f"    outcome — resumed {summary['Resumed Payment']}, "
+        f"churned {summary['Cancelled — Churned']}, "
+        f"unknown {summary['Left Book — Unknown']}", flush=True
+    )
     return len(rows_to_write)
 
 
@@ -596,7 +693,9 @@ def main():
             str(filt_debt_total),
             str(total_debt),
             delta_formula,
-            f"=SUMIF('📞 Activity Log'!$A:$A,A{next_row},'📞 Activity Log'!$L:$L)",
+            # Col P is "AED Collected". (It was col L before Phone Number / Product /
+            # Qty / Successful Billing Cycles were inserted; L is now a cycle count.)
+            f"=SUMIF('📞 Activity Log'!$A:$A,A{next_row},'📞 Activity Log'!$P:$P)",
         ]
         print(f"  Writing Recovery Tracker row {next_row}: {row_data[:6]}", flush=True)
         # Use append API — finds last data row automatically, no row-counting fragility
