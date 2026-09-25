@@ -299,24 +299,39 @@ def sheets_append(creds, range_name, values):
     return updated
 
 
-def get_crm_map(creds, tab_name):
-    """Read cols O–AM (CRM tracking) keyed by email (col C = index 2)."""
-    rows = sheets_get(creds, f"{tab_name}!A2:AM1000")
+def get_crm_map(creds, tab_name, crm_width):
+    """Analyst-maintained columns (O onward) keyed by EMAIL, not row position.
+
+    The daily rebuild re-sorts rows by (stage, debt), so anything pinned to a row
+    number drifts onto a different customer overnight. Reading these by email and
+    writing them back alongside their own row is what keeps notes attached to the
+    right person. Every value is padded to crm_width so short rows can never leave
+    a previous occupant's cells in place.
+    """
+    rows = sheets_get(creds, f"{tab_name}!A2:AM2000")
     crm  = {}
     for row in rows:
         email = row[2].strip().lower() if len(row) > 2 else ""
-        if not email: continue
-        data  = row[14:] if len(row) > 14 else []
+        if not email:
+            continue
+        data = [str(v) for v in (row[14:] if len(row) > 14 else [])][:crm_width]
         if any(v.strip() for v in data):
-            crm[email] = data
+            crm[email] = data + [""] * (crm_width - len(data))
     return crm
 
 
 # ── Build rows ─────────────────────────────────────────────────────────────────
 STAGE_ORDER = {"ESCALATE": 0, "INTERNAL — PRIORITY": 1, "INTERNAL — STANDARD": 2, "AUTO FLOW": 3}
 
+# Columns the refresh itself writes end at N. Everything after that is analyst-owned
+# and must be carried across by email, not left sitting at a row number.
+MACHINE_CRM_WIDTH = 3   # O Subscription Start, P Mostapha Notes, Q Agent Status
+FILTER_CRM_WIDTH  = 1   # O Agent Status
+MACHINE_LAST_COL  = "Q"
+FILTER_LAST_COL   = "O"
 
-def make_sheet_rows(records, crm_map):
+
+def make_sheet_rows(records, crm_map, crm_width=0):
     rows = []
     for r in sorted(records, key=lambda x: (STAGE_ORDER.get(x["stage"], 4), -x["est_debt"])):
         core = [
@@ -335,7 +350,10 @@ def make_sheet_rows(records, crm_map):
             r["earliest"],              # M: First Failure
             r["latest"],                # N: Last Error
         ]
+        # Always emit the full width: a ragged row leaves the old cells untouched,
+        # which is exactly how notes end up on the wrong customer.
         crm = crm_map.get(r["email"].strip().lower(), [])
+        crm = (crm + [""] * crm_width)[:crm_width]
         rows.append(core + crm)
     return rows
 
@@ -649,17 +667,24 @@ def main():
     # Write machine tab. Write FIRST, then clear only the tail below what we wrote:
     # clearing before writing leaves the tab empty if the write then fails, and
     # sheets_put now raises, which would strand the team on an empty debt book.
-    machine_rows = make_sheet_rows(machine, {})
+    # Read the analyst columns BEFORE overwriting, so they can be re-attached by
+    # email. MACHINE_CRM_WIDTH covers Subscription Start / Mostapha Notes /
+    # Agent Status; FILTER_CRM_WIDTH covers Agent Status.
+    machine_crm = get_crm_map(creds, "🔧 Machine Debt", MACHINE_CRM_WIDTH)
+    filt_crm    = get_crm_map(creds, "🔄 Filter Debt", FILTER_CRM_WIDTH)
+    print(f"  CRM preserved: {len(machine_crm)} machine, {len(filt_crm)} filter", flush=True)
+
+    machine_rows = make_sheet_rows(machine, machine_crm, MACHINE_CRM_WIDTH)
     sheets_put(creds, "🔧 Machine Debt!A2", machine_rows)
     time.sleep(0.4)
-    sheets_clear(creds, f"🔧 Machine Debt!A{2 + len(machine_rows)}:N2000")
+    sheets_clear(creds, f"🔧 Machine Debt!A{2 + len(machine_rows)}:{MACHINE_LAST_COL}2000")
     time.sleep(0.4)
 
     # Write filter tab (same order, same reason)
-    filt_rows = make_sheet_rows(filt, {})
+    filt_rows = make_sheet_rows(filt, filt_crm, FILTER_CRM_WIDTH)
     sheets_put(creds, "🔄 Filter Debt!A2", filt_rows)
     time.sleep(0.4)
-    sheets_clear(creds, f"🔄 Filter Debt!A{2 + len(filt_rows)}:N2000")
+    sheets_clear(creds, f"🔄 Filter Debt!A{2 + len(filt_rows)}:{FILTER_LAST_COL}2000")
     time.sleep(0.4)
 
     # Update dashboard
