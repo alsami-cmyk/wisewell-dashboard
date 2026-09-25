@@ -598,7 +598,13 @@ def log_resolved_customers(creds, prev_customers, current_emails, activity_email
             ]
             for i in range(len(rows_to_write))
         ]
-        sheets_put(creds, f"✅ Resolved!K{first_row}", formulas)
+        try:
+            sheets_put(creds, f"✅ Resolved!K{first_row}", formulas)
+        except Exception as exc:
+            # Cosmetic column. The rows are already appended; if this raised, main()
+            # would skip save_current_customers and tomorrow would re-log the same
+            # customers as resolved — the exact double-counting this commit removes.
+            print(f"  [resolved] col K formulas skipped: {exc}", flush=True)
 
     firsts = sum(1 for r in rows_to_write if r[13] == "First-time")
     chronic = sum(1 for r in rows_to_write if r[13] == "Chronic revolver")
@@ -640,16 +646,20 @@ def main():
     print("\n[4/6] Refreshing sheet...", flush=True)
     creds = get_sheets_creds()
 
-    # Write machine tab
-    sheets_clear(creds, "🔧 Machine Debt!A2:N2000")
+    # Write machine tab. Write FIRST, then clear only the tail below what we wrote:
+    # clearing before writing leaves the tab empty if the write then fails, and
+    # sheets_put now raises, which would strand the team on an empty debt book.
+    machine_rows = make_sheet_rows(machine, {})
+    sheets_put(creds, "🔧 Machine Debt!A2", machine_rows)
     time.sleep(0.4)
-    sheets_put(creds, "🔧 Machine Debt!A2", make_sheet_rows(machine, {}))
+    sheets_clear(creds, f"🔧 Machine Debt!A{2 + len(machine_rows)}:N2000")
     time.sleep(0.4)
 
-    # Write filter tab
-    sheets_clear(creds, "🔄 Filter Debt!A2:N2000")
+    # Write filter tab (same order, same reason)
+    filt_rows = make_sheet_rows(filt, {})
+    sheets_put(creds, "🔄 Filter Debt!A2", filt_rows)
     time.sleep(0.4)
-    sheets_put(creds, "🔄 Filter Debt!A2", make_sheet_rows(filt, {}))
+    sheets_clear(creds, f"🔄 Filter Debt!A{2 + len(filt_rows)}:N2000")
     time.sleep(0.4)
 
     # Update dashboard
