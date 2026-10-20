@@ -92,7 +92,15 @@
   .note > b:first-child { display: block; margin-bottom: 2px; }
   .note.tip { background: var(--accent-soft); border-left: 4px solid var(--accent); }
   .note.warn { background: var(--warn-soft); border-left: 4px solid var(--warn); }
-  .note.water { background: #e8f4fc; border-left: 4px solid var(--water-ink); }
+  .note.watch { background: #e8f4fc; border-left: 4px solid var(--water-ink); }
+  .choice { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .choice label {
+    display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 10px;
+    background: #fff; border: 1px solid var(--line); font-weight: 600; cursor: pointer;
+  }
+  .choice label:has(input:checked) { border-color: var(--water-ink); box-shadow: inset 0 0 0 1px var(--water-ink); }
+  .choice input { width: 18px; height: 18px; margin: 0; accent-color: var(--water-ink); flex-shrink: 0; }
+  .tally { font-size: 13px; color: var(--ink-2); margin-top: 8px; }
 
   /* Current unit */
   .unit-fields { display: grid; grid-template-columns: 1fr 1.6fr; gap: 10px; }
@@ -217,7 +225,7 @@
       <div class="ref-row">
         <div class="grow">
           <div class="k">Tracking sheet</div>
-          <div class="v">MAC ID + room number for every unit</div>
+          <div class="v">Find the MAC ID, add room, WiFi status, date</div>
         </div>
         <div class="btns">
           <a class="btn dark" href="https://docs.google.com/spreadsheets/d/1FvKiyoOkyZBatEds7lyQ9EYqVxBhiwKswOGVOZUsqdo/edit?gid=0#gid=0" target="_blank" rel="noopener">Open sheet</a>
@@ -294,7 +302,17 @@
             <figcaption>Where the coffee niche is in the suite.</figcaption>
           </figure>
         </div>
-        <div class="done-row"><input type="checkbox" id="s1"><label for="s1">Placed and plugged in</label></div>
+        <div class="note watch">
+          <b>Hardware check: is the WiFi light already on?</b>
+          Right after plugging in, before you pair it, look at the WiFi icon on the touch panel. Is it already lit white? Check this on every unit; we want to know if it happens across the board.
+          <div class="choice" role="radiogroup" aria-label="WiFi light on at plug-in">
+            <label><input type="radio" name="wifiLight" value="yes"> Yes, lit white</label>
+            <label><input type="radio" name="wifiLight" value="no"> No, it's off</label>
+          </div>
+          <div class="tally" id="wifiTally"></div>
+          <div class="tally">Anything else (blinking, another colour)? Write it in the sheet's Comments.</div>
+        </div>
+        <div class="done-row"><input type="checkbox" id="s1"><label for="s1">Placed, plugged in, WiFi light checked</label></div>
       </div>
     </article>
 
@@ -345,14 +363,15 @@
       <div class="step-body">
         <ol>
           <li>Find the <b>MAC ID</b> on the label on the back of the machine.</li>
-          <li>Open the tracking sheet and enter the MAC ID with the <b>room number</b> next to it.</li>
+          <li>Open the tracking sheet. The MAC IDs are already listed: find this one and type the <b>room number</b> next to it.</li>
+          <li>In <b>Comments</b>, note the WiFi light check from step 1, e.g. "WiFi light on at plug-in: Yes".</li>
         </ol>
         <div class="note tip">
           <b>Tip</b>
-          Take a photo of the label first. It's easier to type from, and you'll have a backup if a digit gets mistyped.
+          Take a photo of the label first. To find the row fast, search the sheet for the last 4 characters. If the MAC ID isn't listed, double-check the label, then add it in a new row.
         </div>
         <p style="margin:14px 0 0"><a class="btn dark big" href="https://docs.google.com/spreadsheets/d/1FvKiyoOkyZBatEds7lyQ9EYqVxBhiwKswOGVOZUsqdo/edit?gid=0#gid=0" target="_blank" rel="noopener">Open tracking sheet</a></p>
-        <div class="done-row"><input type="checkbox" id="s4"><label for="s4">MAC ID and room are in the sheet</label></div>
+        <div class="done-row"><input type="checkbox" id="s4"><label for="s4">Room number and WiFi light comment are in the sheet</label></div>
       </div>
     </article>
 
@@ -362,13 +381,13 @@
         <p>Pair it using the Wisewell app on your phone. The video shows the whole flow (19 seconds, no sound).</p>
         <video controls playsinline muted preload="metadata" poster="img/wifi-pairing-poster.jpg" src="wifi-pairing.mp4"></video>
         <div class="note warn">
-          <b>Pick Nano, not Model 1</b>
-          The video was recorded with a Model 1. On "Which Wisewell do you have?", tap <b>Nano</b> (the one with the tank on the side). The "Prepare" screen will then show the Nano's own button steps.
+          <b>Select Nano+ (not Nano, not Model 1)</b>
+          On "Which Wisewell do you have?", tap <b>Nano+</b>, even though this is the Nano Tank. It's a temporary backend issue. The video picks Model 1; ignore that.
         </div>
         <ol>
           <li>Open the Wisewell app and tap <b>Connect a new device</b>.</li>
-          <li>Choose <b>Nano</b>, then tap <b>Continue</b>.</li>
-          <li>Do what the <b>Prepare your Nano</b> screen says until the WiFi icon on the machine blinks. Tick <b>Wi-Fi light is blinking</b> and tap <b>Next — my device is ready</b>.</li>
+          <li>Choose <b>Nano+</b>, then tap <b>Continue</b>.</li>
+          <li>Do what the <b>Prepare your Nano+</b> screen says until the WiFi icon on the machine blinks. Tick <b>Wi-Fi light is blinking</b> and tap <b>Next — my device is ready</b>.</li>
           <li>Wait while the app finds the machine and connects it to WiFi. This can take a few minutes. If it asks for the network, use the hotel WiFi:
             <div class="btns" style="justify-content:flex-start;margin-top:8px">
               <button class="btn" data-copy="HotelStaff">Copy <code style="font-weight:600">HotelStaff</code></button>
@@ -392,12 +411,13 @@
           <li>Open <b>portal.wisewell.com/devices</b>.</li>
           <li>Sign in with <code>wrodriguez@bakerscay.com</code> and OTP <code>123456</code>.</li>
           <li>Check the new machine is listed and online. Match it by MAC ID.</li>
+          <li>In the tracking sheet, set <b>Connected to Wifi?</b> to Yes and fill in the <b>Installation Date</b>.</li>
         </ol>
         <div class="btns" style="justify-content:flex-start;margin-top:14px">
           <a class="btn dark big" href="https://portal.wisewell.com/devices" target="_blank" rel="noopener">Open control center</a>
           <button class="btn big" data-copy="wrodriguez@bakerscay.com">Copy email</button>
         </div>
-        <div class="done-row"><input type="checkbox" id="s6"><label for="s6">Online in the control center</label></div>
+        <div class="done-row"><input type="checkbox" id="s6"><label for="s6">Online in the control center and marked in the sheet</label></div>
       </div>
     </article>
 
@@ -465,7 +485,7 @@
   var CHECKS = ['s1', 's2', 's3', 's4', 's5', 's6', 't-cold', 't-hot', 't-amb'];
   var WA_NUMBER = '971526778563';
 
-  var state = { done: 0, checks: {}, room: '', mac: '' };
+  var state = { done: 0, checks: {}, room: '', mac: '', wifiLight: '', tally: { yes: 0, no: 0 } };
   try {
     var saved = JSON.parse(localStorage.getItem(KEY) || 'null');
     if (saved && typeof saved === 'object') {
@@ -473,6 +493,8 @@
       state.checks = saved.checks || {};
       state.room = saved.room || '';
       state.mac = saved.mac || '';
+      state.wifiLight = saved.wifiLight || '';
+      if (saved.tally) state.tally = { yes: Number(saved.tally.yes) || 0, no: Number(saved.tally.no) || 0 };
     }
   } catch (e) {}
 
@@ -528,8 +550,9 @@
   function renderMessage() {
     var room = roomEl.value.trim() || '___';
     var mac = macEl.value.trim() || '___';
-    var msg = "Hi Jose, a Nano at Baker's Cay isn't connecting. Room " + room + ', MAC ID ' + mac +
-      '. Could you check the Tuya logs?';
+    var light = state.wifiLight ? ' WiFi light was ' + (state.wifiLight === 'yes' ? 'already on' : 'off') + ' at plug-in.' : '';
+    var msg = "Hi Jose, a Nano at Baker's Cay isn't connecting. Room " + room + ', MAC ID ' + mac + '.' + light +
+      ' Could you check the Tuya logs?';
     document.getElementById('msgPreview').textContent = msg;
     document.getElementById('waLink').href = 'https://wa.me/' + WA_NUMBER + '?text=' + encodeURIComponent(msg);
   }
@@ -540,16 +563,35 @@
     });
   });
 
+  // WiFi light hardware check
+  var lightEls = document.querySelectorAll('input[name="wifiLight"]');
+  function renderTally() {
+    var total = state.tally.yes + state.tally.no;
+    document.getElementById('wifiTally').textContent = total
+      ? 'So far: ' + state.tally.yes + ' of ' + total + ' logged units had the light on at plug-in.'
+      : 'No units logged yet. The count updates when you tap "Unit done".';
+  }
+  lightEls.forEach(function (el) {
+    el.checked = el.value === state.wifiLight;
+    el.addEventListener('change', function () {
+      state.wifiLight = el.value;
+      renderMessage(); save();
+    });
+  });
+
   // Next unit
   document.getElementById('nextUnit').addEventListener('click', function () {
-    var allDone = ['s1', 's2', 's3', 's4', 's5', 's6'].every(function (id) { return document.getElementById(id).checked; });
-    if (!allDone && !confirm('Not every step is ticked. Count this unit as done anyway?')) return;
+    var allDone = ['s1', 's2', 's3', 's4', 's5', 's6'].every(function (id) { return document.getElementById(id).checked; }) &&
+      !!state.wifiLight;
+    if (!allDone && !confirm('Not every step is ticked (or the WiFi light check is missing). Count this unit as done anyway?')) return;
     state.done++;
+    if (state.wifiLight) state.tally[state.wifiLight]++;
     state.checks = {};
-    state.room = ''; state.mac = '';
+    state.room = ''; state.mac = ''; state.wifiLight = '';
     CHECKS.forEach(function (id) { document.getElementById(id).checked = false; });
+    lightEls.forEach(function (el) { el.checked = false; });
     roomEl.value = ''; macEl.value = '';
-    renderProgress(); renderSteps(); renderMessage(); save();
+    renderProgress(); renderSteps(); renderMessage(); renderTally(); save();
     toast(state.done >= TOTAL ? 'All ' + TOTAL + ' units done!' : 'Unit logged. ' + (TOTAL - state.done) + ' to go');
     document.getElementById('steps').scrollIntoView();
   });
@@ -578,6 +620,7 @@
   renderProgress();
   renderSteps();
   renderMessage();
+  renderTally();
 })();
 </script>
 </body>
