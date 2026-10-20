@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#131416">
+<title>Baker's Cay Nano Rollout</title>
+<meta name="description" content="Step-by-step SOP for installing and connecting the 23 Wisewell Nano units at Baker's Cay.">
+<link rel="icon" href="img/wisewell-logo.png">
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #131416;
+    --ink-2: #4a4f57;
+    --ink-3: #757b84;
+    --bg: #eff3f6;
+    --card: #ffffff;
+    --line: #dde3e9;
+    --accent: #e8821a;
+    --accent-soft: #fdf1e4;
+    --water: #bee0f5;
+    --water-ink: #145a86;
+    --ok: #1f8a4c;
+    --ok-soft: #e4f4ea;
+    --warn: #c2410c;
+    --warn-soft: #fbeae3;
+    --wa: #1da851;
+    --radius: 14px;
+    --shadow: 0 1px 2px rgba(19,20,22,.06), 0 4px 16px rgba(19,20,22,.05);
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  a { color: inherit; }
+  img { max-width: 100%; display: block; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 16px; }
+
+  /* Header */
+  .hero { background: var(--ink); color: #fff; overflow: hidden; }
+  .hero .wrap { display: flex; align-items: center; gap: 12px; padding-top: 24px; padding-bottom: 8px; }
+  .hero-text { flex: 1; min-width: 0; padding-bottom: 20px; }
+  .logo { width: 120px; height: auto; margin-bottom: 28px; }
+  .eyebrow { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: #a9afb8; margin: 0 0 6px; }
+  h1 { font-size: clamp(30px, 8vw, 44px); line-height: 1.05; margin: 0 0 10px; letter-spacing: -.02em; }
+  .hero p.sub { margin: 0; color: #c9ced5; font-size: 15px; }
+  .hero-img { width: 38%; max-width: 230px; flex-shrink: 0; align-self: flex-end; margin-bottom: -6px; }
+
+  /* Progress */
+  .progress { position: sticky; top: 0; z-index: 10; background: rgba(239,243,246,.92); backdrop-filter: saturate(1.4) blur(10px); -webkit-backdrop-filter: saturate(1.4) blur(10px); border-bottom: 1px solid var(--line); }
+  .progress .wrap { display: flex; align-items: center; gap: 12px; padding-top: 10px; padding-bottom: 10px; }
+  .progress-label { font-size: 14px; color: var(--ink-2); white-space: nowrap; }
+  .progress-label b { color: var(--ink); font-size: 18px; font-variant-numeric: tabular-nums; }
+  .bar { flex: 1; height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; }
+  .bar span { display: block; height: 100%; width: 0; background: var(--ok); border-radius: 99px; transition: width .3s; }
+  .stepper { display: flex; gap: 4px; }
+  .stepper button { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); font-size: 18px; line-height: 1; color: var(--ink); cursor: pointer; }
+
+  main { padding: 20px 0 48px; }
+  section { margin-bottom: 28px; scroll-margin-top: 64px; }
+  h2 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 10px; font-weight: 600; }
+  .card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px; }
+
+  /* Quick reference */
+  .ref { padding: 6px 18px; }
+  .ref-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+  .ref-row:first-child { border-top: 0; }
+  .ref-row .k { font-size: 12px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; }
+  .ref-row .v { font-weight: 600; word-break: break-word; }
+  .ref-row .v code { font: 600 15px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg); padding: 1px 6px; border-radius: 6px; }
+  .ref-row .grow { flex: 1; min-width: 0; }
+  .btns { display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    min-height: 36px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--card); color: var(--ink); font: 600 14px/1 inherit; text-decoration: none; cursor: pointer; white-space: nowrap;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn.dark { background: var(--ink); border-color: var(--ink); color: #fff; }
+  .btn.wa { background: var(--wa); border-color: var(--wa); color: #fff; }
+  .btn.big { min-height: 48px; padding: 0 18px; font-size: 16px; border-radius: 12px; }
+  .btn.copied { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
+  .btn svg { width: 16px; height: 16px; }
+
+  /* Callouts */
+  .note { border-radius: 12px; padding: 12px 14px; font-size: 15px; margin: 14px 0 0; }
+  .note b { display: block; margin-bottom: 2px; }
+  .note.tip { background: var(--accent-soft); border-left: 4px solid var(--accent); }
+  .note.warn { background: var(--warn-soft); border-left: 4px solid var(--warn); }
+  .note.water { background: #e8f4fc; border-left: 4px solid var(--water-ink); }
+
+  /* Current unit */
+  .unit-fields { display: grid; grid-template-columns: 1fr 1.6fr; gap: 10px; }
+  label.field { display: block; font-size: 12px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; }
+  label.field input {
+    display: block; width: 100%; margin-top: 4px; height: 44px; padding: 0 12px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+    font: 600 16px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink);
+  }
+  label.field input:focus { outline: 2px solid var(--accent); outline-offset: 1px; background: #fff; }
+  .unit-hint { font-size: 13px; color: var(--ink-3); margin: 10px 0 0; }
+
+  /* Steps */
+  .step { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 14px; overflow: hidden; transition: background .2s; }
+  .step-head { display: flex; align-items: flex-start; gap: 14px; padding: 18px 18px 0; }
+  .num {
+    flex-shrink: 0; width: 36px; height: 36px; border-radius: 50%; background: var(--ink); color: #fff;
+    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;
+  }
+  .step h3 { margin: 6px 0 0; font-size: 20px; line-height: 1.25; letter-spacing: -.01em; }
+  .step-body { padding: 10px 18px 18px 68px; }
+  .step-body > p:first-child { margin-top: 0; }
+  .step ul, .step ol { margin: 8px 0 0; padding-left: 20px; }
+  .step li { margin: 6px 0; }
+  .step li::marker { color: var(--ink-3); }
+  .figure { margin: 14px 0 0; }
+  .figure a { display: block; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  .figure figcaption { font-size: 13px; color: var(--ink-3); margin-top: 6px; }
+  .figs { display: grid; grid-template-columns: 1.3fr 1fr; gap: 10px; }
+  .done-row { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--line); }
+  .done-row input { width: 24px; height: 24px; accent-color: var(--ok); margin: 0; flex-shrink: 0; }
+  .done-row label { font-weight: 600; cursor: pointer; }
+  .step.is-done { background: var(--ok-soft); }
+  .step.is-done .num { background: var(--ok); }
+  .step.is-done .num::after { content: "\2713"; }
+  .step.is-done .num span { display: none; }
+
+  .temps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+  .temp { border: 1px solid var(--line); border-radius: 10px; padding: 10px 8px; text-align: center; background: var(--bg); }
+  .temp input { width: 20px; height: 20px; accent-color: var(--ok); margin: 0 auto 4px; display: block; }
+  .temp span { font-weight: 600; font-size: 14px; }
+
+  .video-slot {
+    margin-top: 14px; border: 2px dashed var(--line); border-radius: 12px; padding: 28px 16px; text-align: center;
+    color: var(--ink-3); background: var(--bg); font-size: 15px;
+  }
+  .video-slot b { display: block; color: var(--ink-2); font-size: 16px; margin-bottom: 4px; }
+  video { width: 100%; max-height: 80vh; margin-top: 14px; border-radius: 12px; background: #000; }
+
+  .next-unit { text-align: center; padding: 22px 18px; }
+  .next-unit p { margin: 0 0 14px; color: var(--ink-2); }
+
+  /* Help */
+  .help { border: 1px solid #f3c9a6; background: var(--accent-soft); }
+  .help h3 { margin: 0 0 6px; font-size: 18px; }
+  .help p { margin: 0 0 14px; }
+  .help .msg-preview { font-size: 14px; background: #fff; border-radius: 10px; padding: 10px 12px; color: var(--ink-2); margin-bottom: 14px; border: 1px solid #f3c9a6; }
+
+  details { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 10px; }
+  summary { padding: 16px 18px; font-weight: 600; cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "+"; font-size: 22px; color: var(--ink-3); line-height: 1; }
+  details[open] summary::after { content: "\2212"; }
+  .details-body { padding: 0 18px 18px; }
+  .details-body ol { margin: 0; padding-left: 22px; }
+  .details-body li { margin: 6px 0; font-size: 15px; }
+
+  footer { color: var(--ink-3); font-size: 13px; text-align: center; padding: 8px 16px 40px; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translate(-50%, 20px);
+    background: var(--ink); color: #fff; padding: 10px 16px; border-radius: 99px; font-size: 14px; font-weight: 600;
+    opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 20;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  @media (max-width: 520px) {
+    .step-body { padding-left: 18px; }
+    .figs { grid-template-columns: 1fr; }
+    .ref-row { flex-wrap: wrap; }
+    .ref-row .btns { width: 100%; justify-content: flex-start; }
+    .hero-img { width: 34%; }
+    .logo { width: 104px; margin-bottom: 20px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="hero-text">
+      <img class="logo" src="img/wisewell-logo.png" alt="Wisewell" width="180" height="58">
+      <p class="eyebrow">Baker's Cay · On-site SOP</p>
+      <h1>Nano Tank rollout</h1>
+      <p class="sub">23 units. Run the six steps below once per room.</p>
+    </div>
+    <img class="hero-img" src="img/nano.webp" alt="Wisewell Nano">
+  </div>
+</header>
+
+<div class="progress" aria-label="Rollout progress">
+  <div class="wrap">
+    <div class="progress-label">Units done <b id="doneCount">0</b> / <span id="totalCount">23</span></div>
+    <div class="bar" aria-hidden="true"><span id="bar"></span></div>
+    <div class="stepper">
+      <button type="button" id="dec" aria-label="One fewer unit done">&minus;</button>
+      <button type="button" id="inc" aria-label="One more unit done">+</button>
+    </div>
+  </div>
+</div>
+
+<main class="wrap">
+
+  <section>
+    <h2>Keep handy</h2>
+    <div class="card ref">
+      <div class="ref-row">
+        <div class="grow">
+          <div class="k">Hotel WiFi</div>
+          <div class="v"><code>HotelStaff</code> &nbsp;/&nbsp; <code>#Parad1se</code></div>
+        </div>
+        <div class="btns">
+          <button class="btn" data-copy="HotelStaff">Copy name</button>
+          <button class="btn" data-copy="#Parad1se">Copy password</button>
+        </div>
+      </div>
+      <div class="ref-row">
+        <div class="grow">
+          <div class="k">Tracking sheet</div>
+          <div class="v">MAC ID + room number for every unit</div>
+        </div>
+        <div class="btns">
+          <a class="btn dark" href="https://docs.google.com/spreadsheets/d/1FvKiyoOkyZBatEds7lyQ9EYqVxBhiwKswOGVOZUsqdo/edit?gid=0#gid=0" target="_blank" rel="noopener">Open sheet</a>
+        </div>
+      </div>
+      <div class="ref-row">
+        <div class="grow">
+          <div class="k">Control center</div>
+          <div class="v"><code>wrodriguez@bakerscay.com</code> &nbsp;OTP <code>123456</code></div>
+        </div>
+        <div class="btns">
+          <button class="btn" data-copy="wrodriguez@bakerscay.com">Copy email</button>
+          <a class="btn dark" href="https://portal.wisewell.com/devices" target="_blank" rel="noopener">Open portal</a>
+        </div>
+      </div>
+      <div class="ref-row">
+        <div class="grow">
+          <div class="k">Connection issues</div>
+          <div class="v">Jose (checks Tuya logs) · +971 52 677 8563</div>
+        </div>
+        <div class="btns">
+          <a class="btn wa" href="#help">WhatsApp Jose</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Once, before the first room</h2>
+    <div class="card">
+      <strong>Get your phone on the hotel WiFi</strong>
+      <p style="margin:6px 0 0">Network <code>HotelStaff</code>, password <code>#Parad1se</code> (unless it has changed). Your phone has to be on the same WiFi you'll pair the Nano with.</p>
+      <div class="note tip">
+        <b>Use 2.4 GHz if you can</b>
+        Pairing is always easier on a 2.4 GHz network. If the hotel shows a separate 2.4 GHz option, join that one.
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>This unit</h2>
+    <div class="card">
+      <div class="unit-fields">
+        <label class="field">Room
+          <input id="room" inputmode="numeric" autocomplete="off" placeholder="e.g. 214">
+        </label>
+        <label class="field">MAC ID
+          <input id="mac" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="from the back label">
+        </label>
+      </div>
+      <p class="unit-hint">Optional. Saved on this phone only. If you need Jose, they fill in your WhatsApp message.</p>
+    </div>
+  </section>
+
+  <section id="steps">
+    <h2>Steps for each machine</h2>
+
+    <article class="step" data-step="1">
+      <div class="step-head"><div class="num"><span>1</span></div><h3>Unpack and place it next to the Keurig</h3></div>
+      <div class="step-body">
+        <ul>
+          <li>Place the Nano on the counter <b>to the right of the coffee machine</b>, as in the photo, on a flat, stable surface with its drip tray in place.</li>
+          <li>Plug it <b>straight into the wall outlet</b> (grounded, 3-prong). No extension cord or power adapter.</li>
+          <li>Leave about <b>8 in (20 cm) of open space around the fan</b> so it doesn't overheat.</li>
+          <li>A few drops of water inside a new unit are normal. Every unit is water-tested at the factory.</li>
+        </ul>
+        <div class="figs">
+          <figure class="figure">
+            <a href="img/placement.jpg" target="_blank" rel="noopener"><img src="img/placement.jpg" alt="Nano on the counter, to the right of the Keurig, both plugged into the wall outlet" loading="lazy"></a>
+            <figcaption>Target setup. Tap to enlarge.</figcaption>
+          </figure>
+          <figure class="figure">
+            <a href="img/room.jpg" target="_blank" rel="noopener"><img src="img/room.jpg" alt="Suite living room with the coffee niche on the right" loading="lazy"></a>
+            <figcaption>Where the coffee niche is in the suite.</figcaption>
+          </figure>
+        </div>
+        <div class="done-row"><input type="checkbox" id="s1"><label for="s1">Placed and plugged in</label></div>
+      </div>
+    </article>
+
+    <article class="step" data-step="2">
+      <div class="step-head"><div class="num"><span>2</span></div><h3>Fill the tank (Inlet only)</h3></div>
+      <div class="step-body">
+        <p>The external tank has two sections:</p>
+        <ul>
+          <li><b>Inlet (large):</b> fill to the <b>MAX</b> line with room-temperature drinking water.</li>
+          <li><b>Outlet (small):</b> leave it <b>empty</b>. It collects the wastewater the purifier returns.</li>
+        </ul>
+        <p style="margin-bottom:0">Then fit the tank back into place. The Nano draws water from the Inlet automatically.</p>
+        <figure class="figure">
+          <a href="img/tank.png" target="_blank" rel="noopener"><img src="img/tank.png" alt="Tank diagram: empty tank, then Inlet filled to MAX with Outlet empty, then wastewater in Outlet when it's time to refill" loading="lazy"></a>
+          <figcaption>From the Nano guide. The middle panel is what you want.</figcaption>
+        </figure>
+        <div class="note warn">
+          <b>Never put water in the Outlet</b>
+          Fresh water in the Outlet stops the filtration from working properly. Don't overfill the Inlet past MAX either.
+        </div>
+        <div class="done-row"><input type="checkbox" id="s2"><label for="s2">Inlet filled to MAX, Outlet empty, tank fitted</label></div>
+      </div>
+    </article>
+
+    <article class="step" data-step="3">
+      <div class="step-head"><div class="num"><span>3</span></div><h3>Power on and test cold, hot and ambient</h3></div>
+      <div class="step-body">
+        <p>Press <b>Power</b>. For each temperature: pick a cup size (8.5 fl oz / 250 ml saves water), pick the temperature, then press <b>Dispense</b>.</p>
+        <figure class="figure">
+          <a href="img/controls.png" target="_blank" rel="noopener"><img src="img/controls.png" alt="Touch panel: Wi-Fi and cup sizes on the left, Dispense in the middle, Cold, Ambient, Hot, Power and Lock on the right" loading="lazy"></a>
+          <figcaption>Touch panel layout.</figcaption>
+        </figure>
+        <div class="temps">
+          <label class="temp"><input type="checkbox" id="t-cold"><span>Cold</span></label>
+          <label class="temp"><input type="checkbox" id="t-hot"><span>Hot</span></label>
+          <label class="temp"><input type="checkbox" id="t-amb"><span>Ambient</span></label>
+        </div>
+        <div class="note warn">
+          <b>Hot water</b>
+          Leave the cup on the tray (don't lift it up to the nozzle) and keep hands clear. Right after the hot test, dispense a little cold water to cool the nozzle.
+        </div>
+        <div class="done-row"><input type="checkbox" id="s3"><label for="s3">All three temperatures work</label></div>
+      </div>
+    </article>
+
+    <article class="step" data-step="4">
+      <div class="step-head"><div class="num"><span>4</span></div><h3>Record the MAC ID in the sheet</h3></div>
+      <div class="step-body">
+        <ol>
+          <li>Find the <b>MAC ID</b> on the label on the back of the machine.</li>
+          <li>Open the tracking sheet and enter the MAC ID with the <b>room number</b> next to it.</li>
+        </ol>
+        <div class="note tip">
+          <b>Tip</b>
+          Take a photo of the label first. It's easier to type from, and you'll have a backup if a digit gets mistyped.
+        </div>
+        <p style="margin:14px 0 0"><a class="btn dark big" href="https://docs.google.com/spreadsheets/d/1FvKiyoOkyZBatEds7lyQ9EYqVxBhiwKswOGVOZUsqdo/edit?gid=0#gid=0" target="_blank" rel="noopener">Open tracking sheet</a></p>
+        <div class="done-row"><input type="checkbox" id="s4"><label for="s4">MAC ID and room are in the sheet</label></div>
+      </div>
+    </article>
+
+    <article class="step" data-step="5">
+      <div class="step-head"><div class="num"><span>5</span></div><h3>Connect the machine to WiFi</h3></div>
+      <div class="step-body">
+        <p>Follow the pairing steps in the video. Use the hotel WiFi:</p>
+        <div class="btns" style="justify-content:flex-start">
+          <button class="btn" data-copy="HotelStaff">Copy <code style="font-weight:600">HotelStaff</code></button>
+          <button class="btn" data-copy="#Parad1se">Copy password</button>
+        </div>
+        <!-- VIDEO SLOT: replace this div with <video controls playsinline preload="metadata" src="wifi-pairing.mp4"></video> -->
+        <div class="video-slot" id="video-slot">
+          <b>Pairing video coming soon</b>
+          The WiFi pairing walkthrough will appear here.
+        </div>
+        <div class="note tip">
+          <b>Not pairing?</b>
+          Check that your phone is on the hotel WiFi (2.4 GHz if there's a choice), then try again. Still stuck? Message Jose (see below).
+        </div>
+        <div class="done-row"><input type="checkbox" id="s5"><label for="s5">Paired with WiFi</label></div>
+      </div>
+    </article>
+
+    <article class="step" data-step="6">
+      <div class="step-head"><div class="num"><span>6</span></div><h3>Confirm it shows up in the control center</h3></div>
+      <div class="step-body">
+        <ol>
+          <li>Open <b>portal.wisewell.com/devices</b>.</li>
+          <li>Sign in with <code>wrodriguez@bakerscay.com</code> and OTP <code>123456</code>.</li>
+          <li>Check the new machine is listed and online. Match it by MAC ID.</li>
+        </ol>
+        <div class="btns" style="justify-content:flex-start;margin-top:14px">
+          <a class="btn dark big" href="https://portal.wisewell.com/devices" target="_blank" rel="noopener">Open control center</a>
+          <button class="btn big" data-copy="wrodriguez@bakerscay.com">Copy email</button>
+        </div>
+        <div class="done-row"><input type="checkbox" id="s6"><label for="s6">Online in the control center</label></div>
+      </div>
+    </article>
+
+    <div class="card next-unit">
+      <p id="nextHint">Finished this room? Log it and reset the checklist for the next one.</p>
+      <button type="button" class="btn dark big" id="nextUnit">Unit done, start next room</button>
+    </div>
+  </section>
+
+  <section id="help">
+    <h2>If the connection fails</h2>
+    <div class="card help">
+      <h3>Ask Jose to check the Tuya logs</h3>
+      <p>Jose can see the pairing logs in Tuya and tell you what went wrong. Send the room and MAC ID so they can find the device.</p>
+      <div class="msg-preview" id="msgPreview"></div>
+      <a class="btn wa big" id="waLink" href="https://wa.me/971526778563" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2zm0 18.2a8.2 8.2 0 0 1-4.2-1.1l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8s-.4-.1-.6.1-.7.8-.8 1-.3.2-.5.1a6.7 6.7 0 0 1-3.3-2.9c-.2-.4.2-.4.7-1.3.1-.2 0-.3 0-.4l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5a1 1 0 0 0-.7.3 3 3 0 0 0-.9 2.2 5.2 5.2 0 0 0 1.1 2.7 11.8 11.8 0 0 0 4.5 4c1.7.7 2.3.8 3.2.6a2.7 2.7 0 0 0 1.8-1.2 2.2 2.2 0 0 0 .2-1.3c-.1-.1-.3-.2-.6-.3z"/></svg>
+        WhatsApp Jose
+      </a>
+      <p style="margin:12px 0 0;font-size:14px;color:var(--ink-2)">+971 52 677 8563</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Reference</h2>
+    <details>
+      <summary>Safety and care (from the guide)</summary>
+      <div class="details-body">
+        <ol>
+          <li>Do not move the unit while it is running. Empty the water tank before moving it.</li>
+          <li>Do not rinse or spray the unit with water.</li>
+          <li>Plug directly into its own grounded (3-prong) wall outlet on a 20A circuit. No extension cord or power adapter.</li>
+          <li>Place the unit and the tray on a stable, flat surface.</li>
+          <li>Hot water can splash. Leave the cup on the tray under the nozzle and keep hands away from the stream.</li>
+          <li>The nozzle stays hot after dispensing hot water. Don't touch it; dispense a little cold water to cool it.</li>
+          <li>Supervise children or anyone with disabilities using the unit.</li>
+          <li>If the power cord is damaged, stop using the unit. Only the manufacturer or a qualified technician should replace it.</li>
+          <li>Use only when room and water temperature are between 41°F and 100°F (5–38°C).</li>
+          <li>Use only drinking-quality tap water. Poor water shortens filter life.</li>
+          <li>Fill only the Inlet, up to MAX. Never fill the Outlet, and don't overfill.</li>
+          <li>Keep at least 8 in (20 cm) of open space around the fan.</li>
+          <li>A few drops of water inside a new unit are normal (factory water test).</li>
+        </ol>
+      </div>
+    </details>
+    <details>
+      <summary>Refilling the tank later</summary>
+      <div class="details-body">
+        <p style="margin-top:0">When the Nano stops drawing water, the Inlet is below minimum. Empty <b>both</b> sections (Outlet water is not for drinking), refill only the Inlet to MAX, leave the Outlet empty, and reattach the tank. Never top up without emptying first.</p>
+      </div>
+    </details>
+    <p style="margin:14px 0 0"><a class="btn" href="nano-guide.pdf" target="_blank" rel="noopener">Full Nano guide (PDF, 7 MB)</a></p>
+  </section>
+
+</main>
+
+<footer>Wisewell · Baker's Cay Nano rollout</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  var TOTAL = 23;
+  var KEY = 'bc-nano-sop-v1';
+  var CHECKS = ['s1', 's2', 's3', 's4', 's5', 's6', 't-cold', 't-hot', 't-amb'];
+  var WA_NUMBER = '971526778563';
+
+  var state = { done: 0, checks: {}, room: '', mac: '' };
+  try {
+    var saved = JSON.parse(localStorage.getItem(KEY) || 'null');
+    if (saved && typeof saved === 'object') {
+      state.done = Number(saved.done) || 0;
+      state.checks = saved.checks || {};
+      state.room = saved.room || '';
+      state.mac = saved.mac || '';
+    }
+  } catch (e) {}
+
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {}
+  }
+
+  var toastEl = document.getElementById('toast');
+  var toastTimer;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('show'); }, 1600);
+  }
+
+  // Progress
+  document.getElementById('totalCount').textContent = TOTAL;
+  function renderProgress() {
+    state.done = Math.max(0, Math.min(TOTAL, state.done));
+    document.getElementById('doneCount').textContent = state.done;
+    document.getElementById('bar').style.width = (state.done / TOTAL * 100) + '%';
+  }
+  document.getElementById('inc').addEventListener('click', function () { state.done++; renderProgress(); save(); });
+  document.getElementById('dec').addEventListener('click', function () { state.done--; renderProgress(); save(); });
+
+  // Checklist
+  function renderSteps() {
+    document.querySelectorAll('.step').forEach(function (step) {
+      var box = document.getElementById('s' + step.dataset.step);
+      step.classList.toggle('is-done', !!(box && box.checked));
+    });
+  }
+  CHECKS.forEach(function (id) {
+    var el = document.getElementById(id);
+    el.checked = !!state.checks[id];
+    el.addEventListener('change', function () {
+      state.checks[id] = el.checked;
+      if (id.indexOf('t-') === 0 && document.getElementById('t-cold').checked &&
+          document.getElementById('t-hot').checked && document.getElementById('t-amb').checked) {
+        document.getElementById('s3').checked = state.checks.s3 = true;
+      }
+      renderSteps();
+      save();
+    });
+  });
+
+  // Unit fields + WhatsApp message
+  var roomEl = document.getElementById('room');
+  var macEl = document.getElementById('mac');
+  roomEl.value = state.room;
+  macEl.value = state.mac;
+  function renderMessage() {
+    var room = roomEl.value.trim() || '___';
+    var mac = macEl.value.trim() || '___';
+    var msg = "Hi Jose, a Nano at Baker's Cay isn't connecting. Room " + room + ', MAC ID ' + mac +
+      '. Could you check the Tuya logs?';
+    document.getElementById('msgPreview').textContent = msg;
+    document.getElementById('waLink').href = 'https://wa.me/' + WA_NUMBER + '?text=' + encodeURIComponent(msg);
+  }
+  [roomEl, macEl].forEach(function (el) {
+    el.addEventListener('input', function () {
+      state.room = roomEl.value; state.mac = macEl.value;
+      renderMessage(); save();
+    });
+  });
+
+  // Next unit
+  document.getElementById('nextUnit').addEventListener('click', function () {
+    var allDone = ['s1', 's2', 's3', 's4', 's5', 's6'].every(function (id) { return document.getElementById(id).checked; });
+    if (!allDone && !confirm('Not every step is ticked. Count this unit as done anyway?')) return;
+    state.done++;
+    state.checks = {};
+    state.room = ''; state.mac = '';
+    CHECKS.forEach(function (id) { document.getElementById(id).checked = false; });
+    roomEl.value = ''; macEl.value = '';
+    renderProgress(); renderSteps(); renderMessage(); save();
+    toast(state.done >= TOTAL ? 'All ' + TOTAL + ' units done!' : 'Unit logged. ' + (TOTAL - state.done) + ' to go');
+    document.getElementById('steps').scrollIntoView();
+  });
+
+  // Copy buttons
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy') ? resolve() : reject(); } catch (e) { reject(e); }
+      document.body.removeChild(ta);
+    });
+  }
+  document.querySelectorAll('[data-copy]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      copyText(btn.dataset.copy).then(function () {
+        btn.classList.add('copied');
+        setTimeout(function () { btn.classList.remove('copied'); }, 1200);
+        toast('Copied ' + btn.dataset.copy);
+      }, function () { toast("Couldn't copy, long-press to select"); });
+    });
+  });
+
+  renderProgress();
+  renderSteps();
+  renderMessage();
+})();
+</script>
+</body>
+</html>
