@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#131416">
 <title>Baker's Cay Nano Rollout</title>
-<meta name="description" content="Step-by-step SOP for installing and connecting the 23 Wisewell Nano units at Baker's Cay.">
+<meta name="description" content="Step-by-step SOP for installing and connecting the 24 Wisewell Nano units at Baker's Cay.">
 <link rel="icon" href="img/wisewell-logo.png">
 <style>
   :root {
@@ -52,17 +52,9 @@
   .hero-img { width: 38%; max-width: 230px; flex-shrink: 0; align-self: flex-end; margin-bottom: -6px; }
 
   /* Progress */
-  .progress { position: sticky; top: 0; z-index: 10; background: rgba(239,243,246,.92); backdrop-filter: saturate(1.4) blur(10px); -webkit-backdrop-filter: saturate(1.4) blur(10px); border-bottom: 1px solid var(--line); }
-  .progress .wrap { display: flex; align-items: center; gap: 12px; padding-top: 10px; padding-bottom: 10px; }
-  .progress-label { font-size: 14px; color: var(--ink-2); white-space: nowrap; }
-  .progress-label b { color: var(--ink); font-size: 18px; font-variant-numeric: tabular-nums; }
-  .bar { flex: 1; height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; }
-  .bar span { display: block; height: 100%; width: 0; background: var(--ok); border-radius: 99px; transition: width .3s; }
-  .stepper { display: flex; gap: 4px; }
-  .stepper button { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); font-size: 18px; line-height: 1; color: var(--ink); cursor: pointer; }
 
   main { padding: 20px 0 48px; }
-  section { margin-bottom: 28px; scroll-margin-top: 64px; }
+  section { margin-bottom: 28px; scroll-margin-top: 16px; }
   h2 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 10px; font-weight: 600; }
   .card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px; }
 
@@ -100,7 +92,7 @@
   }
   .choice label:has(input:checked) { border-color: var(--water-ink); box-shadow: inset 0 0 0 1px var(--water-ink); }
   .choice input { width: 18px; height: 18px; margin: 0; accent-color: var(--water-ink); flex-shrink: 0; }
-  .tally { font-size: 13px; color: var(--ink-2); margin-top: 8px; }
+  .hint { font-size: 13px; color: var(--ink-2); margin-top: 8px; }
 
   /* Current unit */
   .unit-fields { display: grid; grid-template-columns: 1fr 1.6fr; gap: 10px; }
@@ -167,7 +159,7 @@
 
   .toast {
     position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translate(-50%, 20px);
-    background: var(--ink); color: #fff; padding: 10px 16px; border-radius: 99px; font-size: 14px; font-weight: 600;
+    background: var(--ink); color: #fff; padding: 10px 16px; border-radius: 99px; font-size: 14px; font-weight: 600; white-space: nowrap;
     opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 20;
   }
   .toast.show { opacity: 1; transform: translate(-50%, 0); }
@@ -190,22 +182,12 @@
       <img class="logo" src="img/wisewell-logo.png" alt="Wisewell" width="180" height="58">
       <p class="eyebrow">Baker's Cay · On-site SOP</p>
       <h1>Nano Tank rollout</h1>
-      <p class="sub">23 units. Run the six steps below once per room.</p>
+      <p class="sub">24 units to install. Run the six steps below once per room.</p>
     </div>
     <img class="hero-img" src="img/nano.webp" alt="Wisewell Nano">
   </div>
 </header>
 
-<div class="progress" aria-label="Rollout progress">
-  <div class="wrap">
-    <div class="progress-label">Units done <b id="doneCount">0</b> / <span id="totalCount">23</span></div>
-    <div class="bar" aria-hidden="true"><span id="bar"></span></div>
-    <div class="stepper">
-      <button type="button" id="dec" aria-label="One fewer unit done">&minus;</button>
-      <button type="button" id="inc" aria-label="One more unit done">+</button>
-    </div>
-  </div>
-</div>
 
 <main class="wrap">
 
@@ -309,8 +291,7 @@
             <label><input type="radio" name="wifiLight" value="yes"> Yes, lit white</label>
             <label><input type="radio" name="wifiLight" value="no"> No, it's off</label>
           </div>
-          <div class="tally" id="wifiTally"></div>
-          <div class="tally">Anything else (blinking, another colour)? Write it in the sheet's Comments.</div>
+          <div class="hint">Note the answer in the sheet's Comments in step 4. Anything else (blinking, another colour)? Write that there too.</div>
         </div>
         <div class="done-row"><input type="checkbox" id="s1"><label for="s1">Placed, plugged in, WiFi light checked</label></div>
       </div>
@@ -395,6 +376,7 @@
             </div>
           </li>
           <li>When you see <b>Your device is connected</b>, pairing is done. You can rename the device on that screen. The room number (e.g. "Room 214") makes it easy to find in the control center.</li>
+          <li>The app then offers to activate the filter. Tap <b>Activate later</b>.</li>
         </ol>
         <div class="note tip">
           <b>Not pairing?</b>
@@ -422,8 +404,8 @@
     </article>
 
     <div class="card next-unit">
-      <p id="nextHint">Finished this room? Log it and reset the checklist for the next one.</p>
-      <button type="button" class="btn dark big" id="nextUnit">Unit done, start next room</button>
+      <p>Finished this room? Clear the checklist for the next one.</p>
+      <button type="button" class="btn dark big" id="nextUnit">Start next room</button>
     </div>
   </section>
 
@@ -480,21 +462,18 @@
 
 <script>
 (function () {
-  var TOTAL = 23;
   var KEY = 'bc-nano-sop-v1';
   var CHECKS = ['s1', 's2', 's3', 's4', 's5', 's6', 't-cold', 't-hot', 't-amb'];
   var WA_NUMBER = '971526778563';
 
-  var state = { done: 0, checks: {}, room: '', mac: '', wifiLight: '', tally: { yes: 0, no: 0 } };
+  var state = { checks: {}, room: '', mac: '', wifiLight: '' };
   try {
     var saved = JSON.parse(localStorage.getItem(KEY) || 'null');
     if (saved && typeof saved === 'object') {
-      state.done = Number(saved.done) || 0;
       state.checks = saved.checks || {};
       state.room = saved.room || '';
       state.mac = saved.mac || '';
       state.wifiLight = saved.wifiLight || '';
-      if (saved.tally) state.tally = { yes: Number(saved.tally.yes) || 0, no: Number(saved.tally.no) || 0 };
     }
   } catch (e) {}
 
@@ -510,16 +489,6 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function () { toastEl.classList.remove('show'); }, 1600);
   }
-
-  // Progress
-  document.getElementById('totalCount').textContent = TOTAL;
-  function renderProgress() {
-    state.done = Math.max(0, Math.min(TOTAL, state.done));
-    document.getElementById('doneCount').textContent = state.done;
-    document.getElementById('bar').style.width = (state.done / TOTAL * 100) + '%';
-  }
-  document.getElementById('inc').addEventListener('click', function () { state.done++; renderProgress(); save(); });
-  document.getElementById('dec').addEventListener('click', function () { state.done--; renderProgress(); save(); });
 
   // Checklist
   function renderSteps() {
@@ -565,12 +534,6 @@
 
   // WiFi light hardware check
   var lightEls = document.querySelectorAll('input[name="wifiLight"]');
-  function renderTally() {
-    var total = state.tally.yes + state.tally.no;
-    document.getElementById('wifiTally').textContent = total
-      ? 'So far: ' + state.tally.yes + ' of ' + total + ' logged units had the light on at plug-in.'
-      : 'No units logged yet. The count updates when you tap "Unit done".';
-  }
   lightEls.forEach(function (el) {
     el.checked = el.value === state.wifiLight;
     el.addEventListener('change', function () {
@@ -583,16 +546,14 @@
   document.getElementById('nextUnit').addEventListener('click', function () {
     var allDone = ['s1', 's2', 's3', 's4', 's5', 's6'].every(function (id) { return document.getElementById(id).checked; }) &&
       !!state.wifiLight;
-    if (!allDone && !confirm('Not every step is ticked (or the WiFi light check is missing). Count this unit as done anyway?')) return;
-    state.done++;
-    if (state.wifiLight) state.tally[state.wifiLight]++;
+    if (!allDone && !confirm('Not every step is ticked (or the WiFi light check is missing). Clear the checklist anyway?')) return;
     state.checks = {};
     state.room = ''; state.mac = ''; state.wifiLight = '';
     CHECKS.forEach(function (id) { document.getElementById(id).checked = false; });
     lightEls.forEach(function (el) { el.checked = false; });
     roomEl.value = ''; macEl.value = '';
-    renderProgress(); renderSteps(); renderMessage(); renderTally(); save();
-    toast(state.done >= TOTAL ? 'All ' + TOTAL + ' units done!' : 'Unit logged. ' + (TOTAL - state.done) + ' to go');
+    renderSteps(); renderMessage(); save();
+    toast('Checklist cleared for the next room');
     document.getElementById('steps').scrollIntoView();
   });
 
@@ -617,10 +578,8 @@
     });
   });
 
-  renderProgress();
   renderSteps();
   renderMessage();
-  renderTally();
 })();
 </script>
 </body>
