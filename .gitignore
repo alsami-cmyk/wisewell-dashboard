@@ -39,3 +39,6 @@ adnoc-model/
 .DS_Store
 .AppleDouble
 .streamlit/secrets.toml
+
+# Netlify CLI link state
+.netlify
