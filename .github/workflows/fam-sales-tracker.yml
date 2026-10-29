@@ -1,0 +1,32 @@
+name: fäm Partnership — Daily Sales Tracker
+
+on:
+  # Daily at 09:00 UAE time (UTC+4 = 05:00 UTC)
+  schedule:
+    - cron: "0 5 * * *"
+
+  # Allow manual trigger from the GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5.4.0
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests google-auth
+
+      - name: Sync fäm orders to the tracking sheet
+        env:
+          SHOPIFY_TOKEN_UAE: ${{ secrets.SHOPIFY_TOKEN_UAE }}
+          RECHARGE_API_KEY:  ${{ secrets.RECHARGE_API_KEY }}
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+        run: python scripts/fam_sales_tracker.py
