@@ -31,7 +31,7 @@ from google.oauth2.credentials import Credentials
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 SHEET_ID    = "1BtDX5amN-NVKaX8cUDnuQS49N989yfSbJpWAHpwEVc0"
-TAB         = "Sheet1"
+TAB_GID     = 0          # tab id from the sheet URL (gid=0); survives the tab being renamed
 HEADERS     = ["Client Name", "Email", "Order Date", "Product Title", "Order ID", "Status"]
 SHOP        = "wisewell-uae.myshopify.com"
 SHOP_TOKEN  = os.environ["SHOPIFY_TOKEN_UAE"]
@@ -65,9 +65,21 @@ def sheets_call(creds, method, path, **kw):
     return r.json()
 
 
-def read_rows(creds):
-    rng = urllib.parse.quote(f"{TAB}!A1:F")
-    return sheets_call(creds, "GET", f"/values/{rng}").get("values", [])
+def tab_title(creds):
+    """Current name of the tracking tab, looked up by its permanent id."""
+    meta = sheets_call(creds, "GET", "", params={"fields": "sheets.properties(sheetId,title)"})
+    for sh in meta.get("sheets", []):
+        if sh["properties"]["sheetId"] == TAB_GID:
+            return sh["properties"]["title"]
+    raise RuntimeError(f"No tab with gid={TAB_GID} in spreadsheet {SHEET_ID}")
+
+
+def a1(tab, rng):
+    return "'" + tab.replace("'", "''") + "'!" + rng
+
+
+def read_rows(creds, tab):
+    return sheets_call(creds, "GET", f"/values/{urllib.parse.quote(a1(tab, 'A1:F'))}").get("values", [])
 
 
 # ── Shopify ────────────────────────────────────────────────────────────────────
@@ -169,9 +181,10 @@ def to_row(o, status):
 
 def main():
     creds = get_sheets_creds()
-    rows = read_rows(creds)
+    tab = tab_title(creds)
+    rows = read_rows(creds, tab)
     if not rows or rows[0][:len(HEADERS)] != HEADERS:
-        sheets_call(creds, "PUT", f"/values/{urllib.parse.quote(TAB + '!A1:F1')}",
+        sheets_call(creds, "PUT", f"/values/{urllib.parse.quote(a1(tab, 'A1:F1'))}",
                     params={"valueInputOption": "RAW"}, json={"values": [HEADERS]})
         rows = [HEADERS] + rows[1:]
     existing = {r[4].strip(): i + 1 for i, r in enumerate(rows) if i > 0 and len(r) > 4 and r[4].strip()}
@@ -186,7 +199,7 @@ def main():
             row_no = existing[o["name"]]
             current = rows[row_no - 1][5] if len(rows[row_no - 1]) > 5 else ""
             if current != status:
-                status_updates.append({"range": f"{TAB}!F{row_no}", "values": [[status]]})
+                status_updates.append({"range": a1(tab, f"F{row_no}"), "values": [[status]]})
         else:
             new_rows.append(to_row(o, status))
 
@@ -194,7 +207,7 @@ def main():
         sheets_call(creds, "POST", "/values:batchUpdate",
                     json={"valueInputOption": "RAW", "data": status_updates})
     if new_rows:
-        sheets_call(creds, "POST", f"/values/{urllib.parse.quote(TAB + '!A:F')}:append",
+        sheets_call(creds, "POST", f"/values/{urllib.parse.quote(a1(tab, 'A:F'))}:append",
                     params={"valueInputOption": "RAW", "insertDataOption": "INSERT_ROWS"},
                     json={"values": new_rows})
 
