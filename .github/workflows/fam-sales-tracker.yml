@@ -1,9 +1,10 @@
 name: fäm Partnership — Daily Sales Tracker
 
 on:
-  # Daily at 09:00 UAE time (UTC+4 = 05:00 UTC)
+  # Daily at 01:00 UAE time (UTC+4 = 21:00 UTC the day before). GitHub often
+  # starts scheduled jobs on this repo ~6h late, so this lands before 09:00 UAE.
   schedule:
-    - cron: "0 5 * * *"
+    - cron: "0 21 * * *"
 
   # Allow manual trigger from the GitHub Actions UI
   workflow_dispatch:
