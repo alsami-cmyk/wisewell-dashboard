@@ -11,6 +11,10 @@ Columns are found by their header name, so they can be reordered and other
 columns can be added without breaking the sync.
 
 Rules
+  • Only orders that used one of fäm's exact codes (FAM_CODES) count. Matching
+    the exact codes, not the "FAM" prefix, keeps any future code that happens
+    to start with FAM (e.g. FAMILY20) out of the sheet and fäm's API. If fäm
+    gets a new code, add it to FAM_CODES.
   • Only the checkout order counts. Recharge renewal orders that carry the same
     code ("Subscription Recurring Order" tag) are skipped.
   • Test orders are skipped (name contains "test" or a @wisewell.com email).
@@ -26,7 +30,6 @@ Rules
 
 import json
 import os
-import re
 import time
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -43,8 +46,8 @@ PRICE_FMT   = {"type": "CURRENCY", "pattern": '"AED "#,##0.00'}
 SHOP        = "wisewell-uae.myshopify.com"
 SHOP_TOKEN  = os.environ["SHOPIFY_TOKEN_UAE"]
 RC_KEY      = os.environ["RECHARGE_API_KEY"]
-CODE_QUERY  = "discount_code:FAM*"
-CODE_RE     = re.compile(r"^FAM", re.I)
+CODE_QUERY  = "discount_code:FAM*"         # broad Shopify search; is_countable() keeps exact matches only
+FAM_CODES   = {"FAM:4", "FAM4"}            # the codes on wisewell.ae/pages/fam (button links / typed fallback)
 UAE         = timezone(timedelta(hours=4))
 
 RC_HEADERS = {"X-Recharge-Access-Token": RC_KEY, "X-Recharge-Version": "2021-11"}
@@ -150,7 +153,7 @@ def fetch_fam_orders():
 
 
 def is_countable(o):
-    if not any(CODE_RE.match(c or "") for c in o["discountCodes"]):
+    if not any((c or "").strip().upper() in FAM_CODES for c in o["discountCodes"]):
         return False
     if any(t.strip().lower() == "subscription recurring order" for t in o["tags"]):
         return False
